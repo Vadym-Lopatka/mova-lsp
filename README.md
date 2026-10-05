@@ -119,10 +119,12 @@ the `nx` binary found on `PATH`.
 ## Uninstall
 
 ```
-cargo uninstall mova nx-core
+cargo uninstall nx-core && rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/nx"
 ```
 
-Delete the clone, and `~/.cache/nx` if you want the caches gone.
+This removes the `nx` binary and the nx cache. Then delete the clone. To
+remove Mova too, use the uninstall line in the
+[mova README](https://github.com/Vadym-Lopatka/mova#install).
 
 ## Tests
 
