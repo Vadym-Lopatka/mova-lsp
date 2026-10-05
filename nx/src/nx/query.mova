@@ -110,6 +110,10 @@
   "Methods parked while the project pass runs when the answer is still empty (JVM await-analysis)."
   #{"textDocument/definition" "textDocument/references" "textDocument/hover"})
 
+(def ^:private awaits-complete
+  "Methods parked while the project pass runs even when the answer is not empty: it would miss the files not analyzed yet."
+  #{"textDocument/references"})
+
 (defn- empty-frame? [raw]
   (or (str/ends-with? raw "\"result\":null}")
       (str/ends-with? raw "\"result\":[]}")
@@ -272,7 +276,7 @@
                   (when (and u (or (str/starts-with? u "jar:") (str/starts-with? u "zipfile:")))
                     (mova.nx/open-external eng u))))
             raw (native-query eng native id params)]
-        (if (and raw (not (:settled? s)) (contains? awaits-analysis method) (empty-frame? raw))
+        (if (and raw (not (:settled? s)) (or (contains? awaits-complete method) (and (contains? awaits-analysis method) (empty-frame? raw))))
           [(update s :waiting conj msg) []]                  ; answered when the project pass is over
           [s [(if raw {:nx/raw raw} (ok id nil))]]))
       [s [(if (contains? jvm-requests method) (ok id nil) (method-not-found id method))]])))   ; known but not native yet: null

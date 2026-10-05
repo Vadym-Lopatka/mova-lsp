@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """nx feature e2e over stdio on a copy of mova/lsp-e2e/projects/clj:
- - requests sent before the project pass ends are parked and answered after it (await-analysis)
+ - requests sent before the project pass ends are parked and answered after it (await-analysis; references even when not empty)
  - requests after didChange see the changed text (waits-for-changes: documentSymbol/completion)
  - hover layout follows client capabilities (markdown when contentFormat has markdown)
  - diagnostics republish when another file changes (unused-public-var)
@@ -43,6 +43,10 @@ def main():
     s.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
     # 1. parked definition: `u/greet` usage in core.clj (line 10, char 21)
     s.send(lb.open_msg(cu, open(core).read()))
+    # 0. references sent at once: parked until settled, so the answer has the other file too (not only the open one)
+    r = req(s, 6, "textDocument/references", {"textDocument": {"uri": cu}, "position": {"line": 10, "character": 21}, "context": {"includeDeclaration": True}})
+    uris = {x["uri"] for x in r.get("result") or []}
+    chk("references answered after the project pass (both files)", uris == {cu, uu}, sorted(uris))
     d = req(s, 1, "textDocument/definition", {"textDocument": {"uri": cu}, "position": {"line": 10, "character": 21}})
     chk("definition answered (parked until settled)", (d.get("result") or {}).get("uri", "").endswith("util.clj"), d)
     # 2. hover markdown layout

@@ -1,7 +1,7 @@
 # mova-lsp (nx)
 
 This repository holds **nx**: a language server (LSP) and a command line
-tool for Clojure. "mova-lsp" is the repository name; "nx" is the name of
+tool for Clojure and Mova code. "mova-lsp" is the repository name; "nx" is the name of
 the tool and of its commands (`nx`, `nx-lsp`).
 
 nx runs on [Mova](https://github.com/Vadym-Lopatka/mova), a Clojure
@@ -50,8 +50,9 @@ These tests are known to fail: `nx/test/docs_test.mova`, `nx/test/pipe_test.mova
 
 ## Install
 
-You need a Rust toolchain, a JDK and the `clojure` CLI (the server asks
-the project's build tool for the classpath), and `python3` for the tests.
+You need a Rust toolchain and `python3` for the tests. For JVM Clojure
+projects you also need a JDK and the `clojure` CLI on `PATH` (nx asks it
+for the classpath). Mova projects need only `mova`.
 
 1. Install Mova:
 
@@ -100,9 +101,16 @@ nx def my.ns/my-fn            # where, signature, doc, source
 nx refs my.ns/my-fn           # uses, grouped by file
 nx outline src/app/core.clj   # vars of a namespace
 nx ns                         # project namespaces
+nx doc map                    # origin, arglists and doc of a name
 nx find greet                 # vars whose name contains the text
 nx hook                       # Claude Code hook (reads JSON on stdin)
+nx --help                     # usage; `nx --version` prints the version
 ```
+
+Long lists are capped (for example 40 lines of findings or matches, 12
+lines of doc). `--all` shows everything: `nx --all check`.
+In a Mova project `nx` finds `mova` through `$MOVA_BIN` or `PATH`; without
+it, Mova core names are known but their docs and source locations are not.
 
 Call the cargo-installed `nx` directly. Do not put the `nx/bin` directory
 of this repository on your `PATH`: `nx/bin/nx` is a wrapper that runs
