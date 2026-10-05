@@ -1,0 +1,17 @@
+;; IO proc: ONE OS thread blocks in the native pool's result queue and feeds Results handles into the graph.
+(ns nx.collector)
+
+(def ^:private in-ports :clojure.core.async.flow/in-ports)
+
+(defn collector-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {} :outs {:out {}}})
+    :init (fn [_]
+            (let [ch (chan 16) eng (mova.nx/engine)]
+              (thread
+                (loop []
+                  (when-let [r (mova.nx/await eng)]
+                    (>!! ch r)
+                    (recur))))
+              {in-ports {:in ch}}))
+    :transform (fn [s _ r] [s {:out [r]}])}))

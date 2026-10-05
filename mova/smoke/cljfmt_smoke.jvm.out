@@ -1,0 +1,7 @@
+[:indent-default "(defn foo [x]\n  (+ x 1))\n"]
+[:trailing-default "(defn foo [x]\n  (+ x 1))\n"]
+[:blanklines-default "(defn foo [x]\n\n  (+ x 1))\n"]
+[:missing-ws-default "(+1 2)\n"]
+[:surround-default "(foo bar)\n"]
+[:multi-lsp "(let [a 1\n      b 2]\n  (+ a b))\n"]
+[:crlf-normalized "(defn foo [x]\r\n  (+ x 1))\r\n"]

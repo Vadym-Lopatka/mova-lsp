@@ -1,0 +1,62 @@
+;; lsp/host (clojure-lsp-on-Mova campaign, mova/PLAN.md item 2): a
+;; MOVA-NATIVE `clojure.pprint` subset, NOT a vendored copy of real
+;; Clojure's `pprint.clj`.
+;;
+;; Why native, not vendored: `pprint.clj` (~2000 lines across `pprint/
+;; utilities.clj`/`pprint/dispatch.clj`/`pprint/cl_format.clj`/...) is
+;; built on column-aware wrapping/pretty-printing machinery (the
+;; `*print-right-margin*`/`*print-miser-width*` layout engine, `cl-
+;; format`'s directive interpreter) that NOTHING in this campaign's scope
+;; actually exercises. The grepped call sites (`grep pprint` across
+;; `jsonrpc4clj`/`lsp4clj`/`cli/src`/`lib/src`):
+;;   - `jsonrpc4clj.server`: `(defmethod pprint/simple-dispatch
+;;     PendingRequest [req] (pprint/pprint (select-keys req [:id :method
+;;     :started])))` -- a print-method REGISTRATION for CIDER/nREPL's
+;;     REPL printer (the file's own comment: "Avoid error... Only when
+;;     CIDER is running?"), never invoked by normal server operation
+;;     (nothing in the request/response/notification pipeline pretty-
+;;     prints a `PendingRequest`).
+;;   - `lib/src/clojure_lsp/common_symbols.clj`,
+;;     `lib/src/clojure_lsp/feature/development_info.clj`: dev-tooling
+;;     (a CLI dev-info feature), not the server startup/protocol path
+;;     this task's goal covers.
+;; Given the only LOAD-TIME requirement is "`pprint/simple-dispatch`
+;; must be a multimethod `defmethod` can extend, and `pprint/pprint`
+;; must exist as a callable", vendoring ~2000 lines of unexercised
+;; layout code for that would be pure surface with no behavioral payout
+;; in this campaign's measured scope. This file gives both: `pprint`
+;; here is a plain `println`-of-`pr-str` (readable output, not
+;; column-wrapped -- diverges from real pprint's multi-line table/
+;; wrapping output for large/deeply-nested data, which nothing in scope
+;; measures), and `simple-dispatch` is a real multimethod dispatching on
+;; `class` with a default arm falling back to the same `pr-str`+
+;; newline, so `(defmethod pprint/simple-dispatch SomeType [x] ...)`
+;; (jsonrpc4clj.server's exact shape) extends it exactly like the real
+;; one does.
+;;
+;; `*print-right-margin*`/`*print-miser-width*` are `def`d (so a
+;; `binding` of them elsewhere doesn't error) but not actually consulted
+;; by `pprint` here -- no measured call site relies on wrapping at a
+;; specific column.
+
+(ns clojure.pprint)
+
+(def ^:dynamic *print-right-margin* nil)
+(def ^:dynamic *print-miser-width* nil)
+
+(defmulti simple-dispatch class)
+
+(defmethod simple-dispatch :default [x]
+  (println (pr-str x)))
+
+(defn pprint
+  ([x] (simple-dispatch x))
+  ([x _writer] (simple-dispatch x)))
+
+(defn print-table
+  "Best-effort: real `print-table` column-aligns; this just prints one
+  line per row as a plain map. No measured call site in this campaign's
+  scope uses `print-table` -- present only so a REQUIRE resolves if
+  something transitively references it."
+  ([rows] (doseq [row rows] (println (pr-str row))))
+  ([_ks rows] (print-table rows)))

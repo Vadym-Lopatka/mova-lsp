@@ -1,0 +1,17 @@
+{
+ "src/demo/main.mova:5:14:definition": "project:src/demo/util.mova:2",
+ "src/demo/main.mova:17:31:definition": "project:src/demo/util.mova:10",
+ "src/demo/main.mova:6:14:definition": "project:src/demo/util.mova:7",
+ "src/demo/main.mova:12:6:definition": "project:src/demo/main.mova:12",
+ "src/demo/main.mova:4:6:definition": "project:src/demo/main.mova:4",
+ "src/demo/main.mova:7:5:definition": "mova:src/builtins/collections.rs:1358",
+ "src/demo/main.mova:7:5:hover": "Mova native (Rust): src/builtins/collections.rs:1359",
+ "src/demo/main.mova:17:8:definition": "mova:src/builtins/collections.rs:1499",
+ "src/demo/main.mova:17:8:hover": "Mova native (Rust): src/builtins/collections.rs:1500",
+ "src/demo/main.mova:17:24:definition": "mova:src/builtins/collections.rs:1941",
+ "src/demo/main.mova:20:19:definition": "mova:src/builtins/collections.rs:1325",
+ "src/demo/main.mova:10:3:definition": "mova:core/core.mova:465",
+ "src/demo/main.mova:13:4:definition": "mova:core/core.mova:1488",
+ "src/demo/util.mova:14:3:definition": "mova:core/core.mova:1554",
+ "src/demo/util.mova:8:10:hover": "Mova native (Rust): src/builtins/collections.rs:1326"
+}

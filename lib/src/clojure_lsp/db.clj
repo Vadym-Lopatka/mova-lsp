@@ -1,0 +1,169 @@
+(ns clojure-lsp.db
+  (:require
+   [clojure-lsp.config :as config]
+   [clojure-lsp.logger :as logger]
+   [clojure-lsp.shared :as shared]
+   [clojure.java.io :as io]
+   [cognitect.transit :as transit])
+  (:import
+   [java.io IOException OutputStream]
+   [java.nio.file CopyOption Files StandardCopyOption]))
+
+(set! *warn-on-reflection* true)
+
+(def ^:private db-logger-tag "[DB]")
+
+(def initial-db {:documents {}
+                 :dep-graph {}
+                 :diagnostics {:clj-kondo nil
+                               :clj-depend nil
+                               :built-in nil
+                               :custom nil}})
+(defonce db* (atom initial-db))
+
+(def version 17)
+
+(defn ^:private sqlite-db-file [project-root]
+  (io/file (str project-root) ".lsp" ".cache" "sqlite.db"))
+
+(defn ^:private datalevin-db-files [db]
+  (let [cache-dir ^java.io.File (config/local-cache-dir db)]
+    [(io/file cache-dir "data.mdb")
+     (io/file cache-dir "lock.mdb")]))
+
+(defn ^:private transit-local-db-file [db]
+  (io/file (config/local-cache-dir db) "db.transit.json"))
+
+(defn ^:private transit-global-db-file []
+  (io/file (config/global-cache-dir) "db.transit.json"))
+
+(defn ^:private remove-old-sqlite-db-file! [project-root-path]
+  (let [old-db-file (sqlite-db-file project-root-path)]
+    (when (shared/file-exists? old-db-file)
+      (io/delete-file old-db-file true))))
+
+(defn ^:private remove-old-datalevin-db-file! [db]
+  (->> (datalevin-db-files db)
+       (filter shared/file-exists?)
+       (mapv #(io/delete-file % true))))
+
+(defn db-exists? [db]
+  (shared/file-exists? (transit-local-db-file db)))
+
+(defn remove-db! [db]
+  (try
+    (io/delete-file (transit-local-db-file db))
+    (catch IOException _ nil)))
+
+(defn ^:private no-flush-output-stream [^OutputStream os]
+  (proxy [java.io.BufferedOutputStream] [os]
+    (flush [])
+    (close []
+      (let [^java.io.BufferedOutputStream this this]
+        (proxy-super flush)
+        (proxy-super close)))))
+
+(defn ^:private update-analysis-elements [analysis f]
+  (reduce-kv
+    (fn [analysis uri buckets]
+      (assoc analysis uri
+             (reduce-kv
+               (fn [buckets bucket elements]
+                 (assoc buckets bucket (mapv (partial f uri) elements)))
+               buckets
+               buckets)))
+    analysis
+    analysis))
+
+(defn ^:private remove-element-uris
+  "Removes the redundant `:uri` of each analysis element before writing the
+  cache, shrinking the file considerably. The analysis map is already keyed
+  by uri, `restore-element-uris` re-assocs it on read."
+  [analysis]
+  (update-analysis-elements analysis (fn [_uri element] (dissoc element :uri))))
+
+(defn ^:private restore-element-uris
+  "Re-assocs the analysis map key as the `:uri` of each element of a read
+  cache, sharing a single String instance per uri. Transit caches map keys
+  but not string values, so serializing `:uri` inside elements would create
+  one String copy per element."
+  [analysis]
+  (update-analysis-elements analysis (fn [uri element] (assoc element :uri uri))))
+
+(defn ^:private atomic-move! [^java.io.File source ^java.io.File target]
+  (try
+    (Files/move (.toPath source) (.toPath target)
+                (into-array CopyOption [StandardCopyOption/ATOMIC_MOVE
+                                        StandardCopyOption/REPLACE_EXISTING]))
+    (catch java.nio.file.AtomicMoveNotSupportedException _
+      (Files/move (.toPath source) (.toPath target)
+                  (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING])))))
+
+(defn ^:private upsert-cache! [cache cache-file]
+  (let [tmp-file (io/file (str cache-file ".tmp"))]
+    (try
+      (shared/logging-task
+        :db/manual-gc-before-update-db
+        ;; Reduce a little bit Out of memory exceptions when writing the cache for huge caches.
+        (System/gc))
+      (shared/logging-task
+        :db/upsert-cache
+        (io/make-parents cache-file)
+        ;; Write to a temp file and atomically move it over the previous cache,
+        ;; so a failed or interrupted write never leaves a truncated cache behind.
+        ;; https://github.com/cognitect/transit-clj/issues/43
+        (with-open [os ^OutputStream (no-flush-output-stream (io/output-stream tmp-file))]
+          (let [writer (transit/writer os :json)
+                cache (cond-> cache
+                        (:analysis cache) (update :analysis remove-element-uris))]
+            (transit/write writer cache)))
+        (atomic-move! tmp-file (io/file cache-file)))
+      (catch Throwable e
+        (logger/error db-logger-tag (str "Could not upsert db cache to " cache-file) e)
+        (try (io/delete-file tmp-file true) (catch Exception _))))))
+
+(defn ^:private read-cache [cache-file]
+  (try
+    (shared/logging-task
+      :db/read-cache
+      (if (shared/file-exists? cache-file)
+        (let [cache (with-open [is (io/input-stream cache-file)]
+                      (transit/read (transit/reader is :json)))]
+          (when (= version (:version cache))
+            (cond-> cache
+              (:analysis cache) (update :analysis restore-element-uris))))
+        (logger/error db-logger-tag (str "No cache DB file found for " cache-file))))
+    (catch Throwable e
+      (logger/error db-logger-tag "Could not load global cache from DB" e))))
+
+(defn upsert-local-cache! [{:keys [project-root] :as project-cache} db]
+  (shared/logging-task
+    :db/upsert-local-cache!
+    (do
+      (remove-old-sqlite-db-file! project-root)
+      (remove-old-datalevin-db-file! db)
+      (upsert-cache! project-cache (transit-local-db-file db)))))
+
+(defn read-local-cache [project-root db]
+  (let [project-analysis (read-cache (transit-local-db-file db))]
+    (when (= (str project-root) (:project-root project-analysis))
+      project-analysis)))
+
+(defn read-and-update-cache! [db db-change-fn]
+  (-> (shared/uri->path (:project-root-uri db))
+      (read-local-cache db)
+      (db-change-fn)
+      (upsert-local-cache! db)))
+
+(defn ^:private upsert-global-cache! [global-cache]
+  (upsert-cache! global-cache (transit-global-db-file)))
+
+(defn read-global-cache []
+  (let [global-cache (read-cache (transit-global-db-file))]
+    (when (= version (:version global-cache))
+      global-cache)))
+
+(defn read-and-update-global-cache! [db-change-fn]
+  (-> (read-global-cache)
+      (db-change-fn)
+      (upsert-global-cache!)))

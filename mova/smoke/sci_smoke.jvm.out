@@ -1,0 +1,5 @@
+=== hooks findings ===
+{:col 1, :filename "mova/smoke/fixtures/hooks/sample/user.clj", :level :warning, :message "custom hook fired", :row 4, :type :my-custom-hook}
+=== custom linter diagnostics ===
+file:///tmp/sci-smoke-fake.clj
+{:code "my-code", :message "custom linter fired", :range {:end {:character 1, :line 0}, :start {:character 0, :line 0}}, :severity 2, :source "my-linter"}

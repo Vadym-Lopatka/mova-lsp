@@ -1,0 +1,13 @@
+(ns clj-kondo.impl.version)
+
+;; MOVA-PATCH: upstream reads `(slurp (io/resource "CLJ_KONDO_VERSION"))` --
+;; a classpath-resource lookup into the clj-kondo jar's root, done eagerly at
+;; namespace load time (a top-level `def`). `mova/bin/vendor.sh` unzips
+;; SOURCE files onto the module path (see mova/PLAN.md), not this non-.clj
+;; resource, and clojure.java.io/resource has no jar/classpath-resource
+;; concept on Mova at all (module-path is directories of source files, not a
+;; jar-backed classloader) -- so the lookup itself is the JVM-only thing,
+;; not the version string. Value copied verbatim from the vendored jar's
+;; CLJ_KONDO_VERSION entry (`unzip -p clj-kondo-*.jar CLJ_KONDO_VERSION`);
+;; keep it in sync when lib/deps.edn's clj-kondo/clj-kondo version bumps.
+(def version "2026.08.05-SNAPSHOT")

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nx command line tool for coding agents (one process per call, no daemon).
+# MOVA_BIN: the mova binary (default: mova on PATH). NX_BIN: the nx-core binary (default: nx on PATH).
+set -euo pipefail
+# No forks here: each $(..) costs about 1-2 ms of start time.
+export MOVA_BIN="${MOVA_BIN:-mova}"
+exec "${NX_BIN:-nx}" "$@"

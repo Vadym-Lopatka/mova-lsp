@@ -1,0 +1,64 @@
+;; Real cognitect.transit is a thin veneer over transit-java, itself
+;; built on Jackson -- but transit's `:json` encoding IS JSON with a
+;; small tagged-value/caching convention on top, so per mova/PLAN.md's
+;; "reuse Rust crates" rule this is a native codec over serde_json
+;; (`mova.transit/read-json`, src/builtins/transit.rs), not a port.
+;;
+;; MOVA-GAP (real fix, not a workaround): `clj-kondo.impl.cache`'s
+;; `from-cache-1` reads BUILT-IN per-namespace/per-Java-class analysis
+;; caches (real `.transit.json` resources shipped with the vendored
+;; clj_kondo source) via `transit/reader`+`transit/read` UNCONDITIONALLY
+;; -- regardless of the top-level `:cache false` lint option, which only
+;; gates the separate ON-DISK, user-writable lint cache. `writer`/
+;; `write` stay unimplemented: clj-kondo's lint path never writes a
+;; transit cache entry (that's the ON-DISK cache, `:cache false` here).
+;;
+;; `reader`'s `_in` is a real `HostKind::InputStream` (`io/input-stream`
+;; on a resource/file, review round 2 -- mova/shims/clojure/java/io.mova).
+;; `reader` just hands `_in` back (same "no separate reader/writer
+;; object" shortcut `writer` below takes) -- `read` streams straight off
+;; it via `mova.transit/read-json-file` (src/builtins/transit.rs), so
+;; the whole document is never slurped into a Mova `Str` first (it used
+;; to be, via `mova.io/read-all`, before that native existed): transit-
+;; json's cache table is still stateful across the WHOLE document, but
+;; that's just an in-memory `Vec<Value>` on the Rust side now, not a
+;; second copy of the source text. `read` still accepts a plain string
+;; too (falls back to `mova.transit/read-json`) for any caller that
+;; already has one in hand.
+;;
+;; `writer`/`write` are now real (`mova.transit/write-json`,
+;; src/builtins/transit.rs): `writer` just hands back `_out` itself (a
+;; real `HostKind::OutputStream`, same "no separate reader/writer object"
+;; shortcut `reader` already takes above) and `write` encodes `_obj` to a
+;; transit-json string in one shot and pushes it through `mova.io/write-
+;; str` -- transit-json's cache table is scoped to ONE document same as
+;; the read side, so there is no meaningful streaming/incremental write
+;; either. Neither clj-kondo's `cache.clj` nor clojure-lsp's `db.clj`
+;; (the only two `write` call sites, mova/PLAN.md) ever pass `:handlers`
+;; (checked both vendored sources), so that opt is not implemented here.
+(ns cognitect.transit)
+
+(defn reader
+  ([_in] (reader _in :json))
+  ([_in _format & _opts]
+   (when (not= _format :json)
+     (throw (ex-info (str "cognitect.transit/reader: only :json is implemented in Mova, got " _format) {})))
+   _in))
+
+(defn writer
+  ([_out] (writer _out :json))
+  ([_out _format & _opts]
+   (when (not= _format :json)
+     (throw (ex-info (str "cognitect.transit/writer: only :json is implemented in Mova, got " _format) {})))
+   _out))
+
+(defn read [rdr]
+  (if (string? rdr)
+    (mova.transit/read-json rdr)
+    (mova.transit/read-json-file rdr)))
+
+(defn write [_writer _obj]
+  ;; Fast path: stream straight to the output stream, no tree/string.
+  (if-let [f (some-> (resolve 'mova.transit/write-json-file) deref)]
+    (f _writer _obj)
+    (mova.io/write-str _writer (mova.transit/write-json _obj))))

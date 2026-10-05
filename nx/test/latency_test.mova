@@ -1,0 +1,276 @@
+;; mova --module-path nx/src nx/test/latency_test.mova   (exit 1 on failure)
+(require 'nx.core.latency 'nx.core.obs 'nx.core.journal 'nx.stats)
+(alias 'jr 'nx.core.journal)
+(alias 'lat 'nx.core.latency)
+(alias 'obs 'nx.core.obs)
+(defn chk [nm a b] (when (not= a b) (println "FAIL" nm (pr-str a) (pr-str b)) (System/exit 1)))
+
+;; stage-stats 
+(chk "bucket" (mapv lat/log2-bucket [0 1 2 3 4 1023 1024 100000000000]) [0 0 1 1 2 9 10 23])
+(let [s (reduce lat/note-sample nil [1 2 3 100 5000])
+      m (lat/merge-stage s s)]
+  (chk "note" (dissoc s :buckets) {:count 5 :sum-us 5106 :max-us 5000})
+  (chk "buckets" [(count (:buckets s)) (reduce + (:buckets s)) (get (:buckets s) 12)] [24 5 1])
+  (chk "merge" [(:count m) (:sum-us m) (:max-us m) (get (:buckets m) 1)] [10 10212 5000 4])
+  (chk "merge-nil" [(lat/merge-stage nil s) (lat/merge-stage s nil)] [s s])
+  (chk "p50" (lat/percentile s 0.5) 3)
+  (chk "p99" (lat/percentile s 0.99) 6144)
+  (chk "p-empty" (lat/percentile {:count 0} 0.5) nil))
+
+;; the fold: taps are [kind t-ns len id method key outcome]
+(def st0 (lat/initial 1000 {:pid 7 :root nil} ["clean-ns"]))
+(defn run [taps] (lat/view (reduce lat/fold st0 taps)))
+(def u "file:///a.clj")
+(let [p (run [[0 1000000 100 0 "initialize" "file:///proj" nil]
+              [1 3000000 0 0 nil nil :ok]
+              [0 4000000 50 nil "initialized" nil nil]
+              [0 5000000 60 1 "textDocument/hover" nil nil]
+              [1 5040000 0 1 nil nil :null]
+              [1 6000000 0 2 nil nil :error]                    ; reply first (reader tapped late)
+              [0 5900000 70 2 "textDocument/definition" nil nil]
+              [0 7000000 80 3 "textDocument/hover" nil nil]      ; never answered
+              [0 8000000 90 4 "workspace/executeCommand" "clean-ns" nil]
+              [1 8500000 0 4 nil nil :ok]
+              [0 9000000 90 5 "workspace/executeCommand" "secret-cmd" nil]
+              [1 9100000 0 5 nil nil :cancelled]
+              [0 9200000 30 6 "my/private-method" nil nil]
+              [1 9300000 0 6 nil nil :error]
+              [0 9400000 20 "s1" nil nil nil]                   ; client response
+              [2 9500000 0 nil nil nil nil]])                   ; raw frame not understood
+      ops (:ops p)]
+  (chk "root" (:config p) {:pid 7 :root "file:///proj"})
+  (chk "init" (dissoc (get ops "initialize") :stages) {:count 1 :bytes 100 :outcomes {:ok 1}})
+  (chk "init-us" (get-in ops ["initialize" :stages :m/inject-us :sum-us]) 2000)
+  (chk "notif" (get ops "initialized") {:count 1 :bytes 50})
+  (chk "hover" [(:count (get ops "textDocument/hover")) (:outcomes (get ops "textDocument/hover"))
+                (get-in ops ["textDocument/hover" :stages :m/inject-us :max-us])] [2 {:null 1} 40])
+  (chk "reply-first" [(:outcomes (get ops "textDocument/definition"))
+                      (get-in ops ["textDocument/definition" :stages :m/inject-us :sum-us])] [{:error 1} 100])
+  (chk "cmd" (:outcomes (get ops "cmd/clean-ns")) {:ok 1})
+  (chk "cmd-other" [(:outcomes (get ops "cmd/other")) (contains? ops "cmd/secret-cmd")] [{:cancelled 1} false])
+  (chk "other" [(:count (get ops "other")) (:sent (get ops "other")) (:outcomes (get ops "other"))] [1 1 {:error 1}])
+  (chk "closed-set" (every? #(or (contains? lat/known-ops %) (contains? #{"other" "cmd/clean-ns" "cmd/other"} %)) (keys ops)) true)
+  (chk "client-response" (get ops "client/response") {:count 1})
+  (chk "unanswered" [(:unanswered p) (:lost-join p)] [1 0]))
+
+;; diagnostics pipeline: the last edit of a uri -> its next publishDiagnostics
+(let [p (run [[0 1000000 500 nil "textDocument/didOpen" u nil]
+              [1 3000000 0 nil "textDocument/publishDiagnostics" u nil]
+              [0 4000000 40 nil "textDocument/didChange" u nil]
+              [0 5000000 40 nil "textDocument/didChange" u nil]
+              [1 5500000 0 nil "textDocument/publishDiagnostics" u nil]
+              [1 6000000 0 nil "textDocument/publishDiagnostics" u nil]    ; no edit pending: counted, no sample
+              [0 7000000 40 nil "textDocument/didChange" u nil]
+              [0 7100000 30 nil "textDocument/didClose" u nil]
+              [1 7200000 0 nil "textDocument/publishDiagnostics" u nil]])  ; after close: no sample
+      d (get (:ops p) "pipe/diagnostics")]
+  (chk "pipe" [(:outcomes d) (get-in d [:stages :m/inject-us :count]) (get-in d [:stages :m/inject-us :sum-us])] [{:ok 2} 2 2500])
+  (chk "pubs" (get (:ops p) "textDocument/publishDiagnostics") {:sent 4})
+  (chk "changes" (get (:ops p) "textDocument/didChange") {:count 3 :bytes 120}))
+
+;; pending joins are bounded: the oldest generation is dropped and counted
+(let [p (run (map (fn [i] [0 (* i 1000) 10 i "nx/ping" nil nil]) (range 9000)))]
+  (chk "evict" [(:lost-join p) (:unanswered p) (:count (get (:ops p) "nx/ping"))] [4096 4904 9000]))
+
+;; sanitize, merge, round trip
+(def pic (assoc (run [[0 1000 10 1 "nx/ping" nil nil] [1 9000 0 1 nil nil :ok]])
+                :until-ms 2000 :ended true :lost 3 :lost-by {:in 1 :out 2} :fold-errors 0
+                :errors {:count 1 :by-pid {:query 1} :last {:obs/kind :error :obs/pid :query :obs/ex "boom"}}))
+(let [s (lat/sanitize (dissoc pic :lost-join))
+      back (lat/sanitize (read-string (lat/edn-str s)))
+      m (lat/merge-pictures s (assoc s :since-ms 500 :until-ms 9000 :ended false))]
+  (chk "sanitize-keeps" [(:ops s) (:lost s) (:errors s) (:sessions s)] [(:ops pic) 3 (:errors pic) 1])
+  (chk "round-trip" back s)
+  (chk "merge" [(:sessions m) (:since-ms m) (:until-ms m) (:ended m) (:lost m) (:lost-by m)
+                (get-in m [:ops "nx/ping" :count]) (get-in m [:ops "nx/ping" :outcomes])
+                (get-in m [:ops "nx/ping" :stages :m/inject-us :count]) (:count (:errors m)) (:by-pid (:errors m))]
+       [2 500 9000 false 6 {:in 2 :out 4} 2 {:ok 2} 2 2 {:query 2}])
+  (chk "merge-nil" (lat/merge-pictures nil s) s)
+  (chk "snapshot" (get-in (lat/snapshot s) [:ops "nx/ping" :stages :m/inject-us])
+       {:count 1 :avg-us 8 :p50-us 12 :p99-us 12 :max-us 8}))
+(chk "not-a-picture" (mapv lat/sanitize [nil 3 "x" [] {} {:v 2 :ops {}} {:v 1 :ops 3}]) [nil nil nil nil nil nil nil])
+(let [zero {:count 0 :sum-us 0 :max-us 0 :buckets (vec (repeat 24 0))}
+      s (lat/sanitize {:v 1 :since-ms "x" :lost -1 :config {:root "r" :fn (fn [] 1) "k" 1}
+                       :ops {"a" {:count 2 :bytes "many" :outcomes {:ok 1 "bad" 2 :null -1}
+                                  :stages {:m/inject-us zero :m/x {:count 1} :m/y {:count 1 :sum-us 1 :max-us 1 :buckets [1]}}}
+                             :kw {:count 1} "b" 7}
+                       :errors {:count "n" :by-pid {:query 1 :docs "x"} :last {:obs/ex "e" :obs/state {:text "doc"}}}})]
+  (chk "sanitize-bad" s {:v 1 :since-ms nil :until-ms nil :ended false :sessions 1 :config {:root "r"}
+                         :ops {"a" {:count 2 :outcomes {:ok 1}}}
+                         :errors {:count 0 :by-pid {:query 1} :last {:obs/ex "e"}}
+                         :lost 0 :lost-by {} :unanswered 0 :fold-errors 0}))
+
+;; obs: the error half. Never the message, the proc state or ex-data.
+(let [e {:clojure.core.async.flow/pid :query :clojure.core.async.flow/op :transform :clojure.core.async.flow/cid :req
+         :clojure.core.async.flow/state {:docs {"file:///a" "SECRET TEXT"}}
+         :clojure.core.async.flow/msg {:method "textDocument/didChange" :params {:contentChanges [{:text "SECRET TEXT"}]}}
+         :clojure.core.async.flow/ex "{:ex/message \"bad thing\\nline 2\", :ex/data {:text \"SECRET TEXT\"}}"}
+      m (obs/flow->msg e)
+      o (reduce obs/note (obs/initial-obs) [m m (obs/flow->msg {:clojure.core.async.flow/pid :docs :clojure.core.async.flow/op :proc-give-up
+                                                               :clojure.core.async.flow/restarts 3})])]
+  (chk "msg" m {:obs/kind :error :obs/pid :query :obs/op :transform :obs/cid :req :obs/about "textDocument/didChange"
+                :obs/ex "bad thing"})
+  (chk "no-leak" (clojure.string/includes? (pr-str o) "SECRET") false)
+  (chk "errors" (dissoc (obs/errors o) :last) {:count 3 :by-pid {:query 2 :docs 1}})
+  (chk "fault" (:obs/ex (:last (obs/errors o))) "supervision: :docs :proc-give-up after 3 restarts")
+  (chk "total" (mapv #(:obs/kind (obs/flow->msg %)) [nil 3 "x" {}]) [:error :error :error :error])
+  (chk "long-line" (count (obs/ex-line (apply str (repeat 500 "x")))) 120))
+
+;; nx-stats: grouping and the table
+(let [a (lat/sanitize (assoc-in (dissoc pic :lost-join) [:config :root] "file:///p1"))
+      b (lat/sanitize (assoc-in (dissoc pic :lost-join) [:config :root] "file:///p2"))
+      g (nx.stats/by-root [a b a])
+      lines (nx.stats/stats-lines (get g "file:///p1"))]
+  (chk "by-root" [(sort (keys g)) (:sessions (get g "file:///p1")) (get-in g ["file:///p1" :ops "nx/ping" :count])]
+       [["file:///p1" "file:///p2"] 2 2])
+  (chk "table" [(count lines) (clojure.string/starts-with? (second lines) "nx/ping")
+                (vec (take-last 3 (clojure.string/split (second lines) #"\s+")))] [2 true ["8us" "8us" "8us"]])
+  (chk "lifetime-edn" (:roots (read-string (nx.stats/lifetime-str g))) g))
+;; native numbers (M2): job stage-stats deltas, pass records, memory, startup
+(let [S (fn [& us] (reduce lat/note-sample nil us))
+      d1 {:jobs {"job/bg" {:count 2 :bytes 300 :stages {:m/queue-us (S 10 20) :m/read-us (S 5 6) :m/parse-us (S 100 200) :m/analyze-us (S 1000 3000)}}}
+          :passes []}
+      d2 {:jobs {"job/bg" {:count 1 :bytes 50 :stages {:m/queue-us (S 4000)}}
+                 "job/open" {:count 1 :bytes 88000 :stages {:m/queue-us (S 30) :m/parse-us (S 900) :m/analyze-us (S 7000)}}}
+          :passes [{:end-ns 9000000 :stages {:m/discover-us 2000 :m/classpath-us 700 :m/jars-us 40000 :m/pass-us 1200000}
+                    :n {:files 3 :cp-cached 1 :jars 157 :jars-warm 157 :jar-cache-b 1000}}]}
+      d3 {:jobs {} :passes [{:end-ns 99000000 :stages {:m/pass-us 800000} :n {:files 3 :cp-cached 0 :jars 157}}]}
+      init (reduce lat/fold st0 [[0 1000000 100 0 "initialize" "file:///proj" nil] [1 3000000 0 0 nil nil :ok]
+                                 [1 4000000 0 nil "$/progress" nil nil] [1 9500000 0 nil "$/progress" "end" nil]
+                                 [1 9900000 0 nil "$/progress" "end" nil]])
+      st1 (lat/note-mem (lat/note-native init d1) [20000000 21000000])
+      st2 (lat/note-mem (lat/note-native st1 d2) [60000000 80000000])
+      st3 (lat/note-mem (lat/note-native st2 d3) [50000000 80000000])
+      p (lat/view st3)
+      bgj (get (:ops p) "job/bg")]
+  (chk "job-merge" [(:count bgj) (:bytes bgj) (get-in bgj [:stages :m/queue-us]) (get-in bgj [:stages :m/read-us :count])]
+       [3 350 (S 10 20 4000) 2])
+  (chk "job-open" [(:count (get (:ops p) "job/open")) (keys (:stages (get (:ops p) "job/open")))]
+       [1 [:m/queue-us :m/parse-us :m/analyze-us]])
+  (chk "pass" [(:count (get (:ops p) "bg/pass")) (get-in p [:ops "bg/pass" :stages :m/pass-us]) (get-in p [:ops "bg/pass" :stages :m/jars-us :sum-us])]
+       [2 (S 1200000 800000) 40000])
+  (chk "bg" (:bg p) {:passes 2 :last {:files 3 :cp-cached 0 :jars 157}
+                     :total {:files 6 :cp-cached 1 :jars 314 :jars-warm 157 :jar-cache-b 1000}})
+  (chk "mem" (:mem p) {:init-b 20000000 :settled-b 60000000 :max-b 80000000 :last-b 50000000})
+  (chk "mem-unknown" (lat/note-mem init nil) init)
+  (chk "mem-before-init" (:mem (:pic (lat/note-mem st0 [5 6]))) {:last-b 5 :max-b 6})
+  ;; base: the taps' clock read 10 ms when the process was 500 ms old
+  (chk "startup" (lat/startup st3 {:ns 10000000 :up-us 500000 :spawn-us 30000 :main-us 40000})
+       {:spawn-us 30000 :main-us 40000 :initialize-in-us 491000 :initialize-out-us 493000 :settled-us 499000
+        :progress-end-us 499500})
+  (chk "progress-sent" (get (:ops p) "$/progress") {:sent 3})
+  (chk "startup-early" [(lat/startup st0 {:ns 1 :up-us 9 :spawn-us 3 :main-us 4}) (lat/startup st0 nil)] [{:spawn-us 3 :main-us 4} nil])
+  (let [full (assoc p :startup (lat/startup st3 {:ns 10000000 :up-us 500000 :spawn-us 30000 :main-us 40000}))
+        s (lat/sanitize full)
+        m (lat/merge-pictures (assoc s :until-ms 5) (assoc s :until-ms 9 :mem {:max-b 90000000} :bg (assoc (:bg s) :last {:files 9})))
+        lines (nx.stats/stats-lines s)
+        at (fn [pre] (first (filter #(clojure.string/starts-with? % pre) lines)))]
+    (chk "sanitize-native" (select-keys s [:bg :mem :startup :ops]) (select-keys full [:bg :mem :startup :ops]))
+    (chk "round-trip-native" (lat/sanitize (read-string (lat/edn-str s))) s)
+    (chk "sanitize-native-bad" (select-keys (lat/sanitize (assoc p :bg 3 :mem {:max-b "x"} :startup [1])) [:bg :mem :startup]) {})
+    (chk "merge-native" [(:bg m) (:mem m) (:startup m) (get-in m [:ops "job/bg" :stages :m/queue-us :count])]
+         [{:passes 4 :last {:files 9} :total {:files 12 :cp-cached 2 :jars 628 :jars-warm 314 :jar-cache-b 2000}} {:max-b 90000000} nil 6])
+    (chk "table-native" [(vec (take-last 3 (clojure.string/split (at "job/bg queue") #"\s+")))
+                         (second (clojure.string/split (at "job/open analyze") #"\s+ |\s+"))
+                         (vec (take-last 3 (clojure.string/split (at "bg/pass jars") #"\s+")))
+                         (some? (at "job/bg read")) (some? (at "job/open read")) (some? (at "initialize "))]
+         [["24us" "3.1ms" "4.0ms"] "analyze" ["40.0ms" "40.0ms" "40.0ms"] true false true])
+    (chk "bg-line" (nx.stats/bg-line s) "passes 2 | files 6 | classpath cached 1 errors 0 | jars 314 warm 157 cold 0 failed 0 | jar files 0 defs 0 cache 0.0MB | ext dirs 0 files 0")
+    (chk "session-line" (nx.stats/session-line s)
+         "    mem MB init 20.0 settled 60.0 max 80.0 last 50.0 | startup spawn 30.0ms main 40.0ms initialize 491.0ms -> 493.0ms settled 499.0ms progress end 499.5ms")
+    (chk "session-line-none" (nx.stats/session-line (lat/sanitize (lat/view st0))) nil)))
+;; the native stage-stats cell (nx_core::met, Rust test `stage_equals_note_sample`) is checked against these numbers
+(chk "native-parity" (let [s (reduce lat/note-sample nil [1 2 3 100 5000])] [(:count s) (:sum-us s) (:max-us s) (get (:buckets s) 12)])
+     [5 5106 5000 1])
+;; the native tap and the fold hold the same closed method set
+(chk "tap-methods" [(first (mova.nx/tap-methods)) (set (rest (mova.nx/tap-methods)))]
+     ["other" (disj lat/known-ops "pipe/diagnostics" "client/response")])
+;; ---- journal (NX_OBS=1) ----
+;; off: no rows are built; on: one row per event, from the same fold
+(let [taps [[0 1000000 100 0 "initialize" "file:///proj" nil]
+            [1 3000000 0 0 nil nil :ok]
+            [0 4000000 50 nil "initialized" nil nil]
+            [0 5000000 60 1 "textDocument/hover" nil nil]            ; never answered
+            [0 5100000 70 nil "textDocument/didOpen" u nil]
+            [1 5900000 0 nil "textDocument/publishDiagnostics" u nil]
+            [1 6000000 0 nil "$/progress" "end" nil]
+            [0 6100000 20 "s1" nil nil nil]
+            [0 7000000 90 3 "workspace/executeCommand" "clean-ns" nil]
+            [1 8000000 0 3 nil nil :error]
+            [2 9500000 0 nil nil nil nil]]
+      off (reduce lat/fold st0 taps)
+      on (reduce lat/fold (lat/journal st0) taps)
+      [rows on'] (lat/take-rows on)
+      by (fn [k] (filter #(= k (:tel/kind %)) rows))]
+  (chk "jr-off" [(:jr off) (first (lat/take-rows off))] [nil []])
+  (chk "jr-same-picture" (lat/view (dissoc on :jr)) (lat/view off))
+  (chk "jr-taken" (:jr on') [])
+  (chk "jr-count" (frequencies (map :tel/kind rows)) {:request 2 :notify 3 :sent 3 :pipe 1})
+  (chk "jr-request" (first (filter #(= "initialize" (:op %)) rows))
+       {:t 1000000 :tel/kind :request :op "initialize" :id 0 :outcome :ok :m/inject-us 2000 :bytes 100 :uri "file:///proj"})
+  (chk "jr-cmd" (first (filter #(= "cmd/clean-ns" (:op %)) rows))
+       {:t 7000000 :tel/kind :request :op "cmd/clean-ns" :id 3 :outcome :error :m/inject-us 1000 :bytes 90 :uri nil})
+  (chk "jr-pipe" (first (by :pipe)) {:t 5900000 :tel/kind :pipe :op "pipe/diagnostics" :uri u :m/inject-us 800})
+  (chk "jr-progress-end" (first (filter #(= "$/progress" (:op %)) rows))
+       {:t 6000000 :tel/kind :sent :op "$/progress" :uri nil :phase "end"})
+  (chk "jr-unanswered" (lat/unanswered-rows on')
+       [{:t 5000000 :tel/kind :request :op "textDocument/hover" :id 1 :outcome :unanswered :bytes 60 :uri nil}])
+  ;; the line: fixed key order, nil and non-plain values left out, never document text
+  (chk "jr-line" (jr/line {:at 5 :tel/kind :request :op "textDocument/hover" :id 1 :outcome :ok :m/inject-us 120 :bytes 61
+                           :uri nil :text "x" :fn (fn [] 1) :zz [1 2]})
+       "{:at 5 :tel/kind :request :op \"textDocument/hover\" :id 1 :outcome :ok :m/inject-us 120 :bytes 61 :text \"x\"}\n")
+  (chk "jr-line-long" (count (jr/line {:at 1 :uri (apply str (repeat 500 "x"))})) (count "{:at 1}\n"))
+  (chk "jr-line-read" (read-string (jr/line {:at 1 :tel/kind :job :op "job/bg" :stages {:m/queue-us {:count 2 :sum-us 5 :max-us 4 :buckets [1]}}}))
+       {:at 1 :tel/kind :job :op "job/bg" :stages {:m/queue-us {:count 2 :sum-us 5 :max-us 4}}}))
+;; text: time order, :t -> wall ms from [base-ms base-ns]
+(chk "jr-text" (jr/text [1000000 5000000000] [{:at 1000010 :tel/kind :lost :count 2} {:t 4999000000 :tel/kind :notify :op "initialized"}])
+     "{:at 999999 :tel/kind :notify :op \"initialized\"}\n{:at 1000010 :tel/kind :lost :count 2}\n")
+(chk "jr-wall" (jr/wall-ms [1000 2000000000] 1999000000) 999)
+;; rotation: one rule
+(chk "jr-rotate" [(jr/rotate? 0 9000000 8000000) (jr/rotate? 7999999 1 8000000) (jr/rotate? 7999999 2 8000000) (jr/rotate? 100 10 8000000)]
+     [false false true false])
+(chk "jr-bound" jr/max-bytes 8000000)
+;; the writer (nx.metrics/jr-write): append, rotate to .log.1 (one kept), turn off on a failure
+(require 'nx.metrics)
+(let [jw @(resolve 'nx.metrics/jr-write)
+      dir (str (or (System/getenv "TMPDIR") "/tmp") "/nx-jr-test-" (mova.os/pid))
+      path (str dir ".log")
+      row (fn [i] {:at i :tel/kind :notify :op "initialized" :bytes i})
+      one (count (jr/line (row 1)))
+      m0 {:wall nil :jr {:path path :bytes 0 :max (* 5 one)}}
+      m1 (jw m0 (map row [1 2 3]))
+      m2 (jw m1 (map row [4 5]))                                ; fits: 5 lines
+      m3 (jw m2 [(row 6)])                                      ; would pass the bound: rotate first
+      m4 (jw m3 (map row [7 8 9 10 11]))                        ; rotate again: the old .log.1 is replaced
+      bad (jw {:jr {:path "/dev/null/x/y" :bytes 0 :max 100}} [(row 1)])]
+  (chk "jr-write-1" [(:bytes (:jr m1)) (:bytes (:jr m2)) (:bytes (:jr m3))] [(* 3 one) (* 5 one) one])
+  (chk "jr-write-files" [(slurp path) (slurp (str path ".1")) (:bytes (:jr m4))]
+       [(apply str (map (comp jr/line row) [7 8 9 10 11])) (jr/line (row 6))
+        (reduce + (map #(count (jr/line (row %))) [7 8 9 10 11]))])
+  (chk "jr-write-empty" (jw m0 []) m0)
+  (chk "jr-write-off" [(:off (:jr bad)) (jw (assoc-in m0 [:jr :off] true) [(row 1)])] [true (assoc-in m0 [:jr :off] true)])
+  (chk "jr-write-nil" (jw {} [(row 1)]) {})
+  (doseq [f [path (str path ".1")]] (try (delete-file f) (catch Exception _ nil))))
+(chk "jr-native" (jr/native-rows {:jobs {"job/bg" {:count 2 :bytes 9 :stages {:m/queue-us {:count 2 :sum-us 5 :max-us 4 :buckets [1]}}}}
+                                  :passes [{:end-ns 77 :stages {:m/pass-us 5} :n {:files 3}}]} 50)
+     [{:at 50 :tel/kind :job :op "job/bg" :count 2 :bytes 9 :stages {:m/queue-us {:count 2 :sum-us 5 :max-us 4}}}
+      {:t 77 :tel/kind :pass :op "bg/pass" :stages {:m/pass-us 5} :n {:files 3}}])
+(chk "jr-lost" [(jr/lost-row {:in 0 :out 0} 1) (jr/lost-row {:in 2 :out 0} 1)] [nil {:at 1 :tel/kind :lost :count 2 :by {:in 2}}])
+(chk "jr-error-row" (jr/error-row (obs/flow->msg {:clojure.core.async.flow/pid :query :clojure.core.async.flow/op :transform
+                                                  :clojure.core.async.flow/msg {:method "textDocument/hover" :params {:text "SECRET"}}
+                                                  :clojure.core.async.flow/ex "boom"}) 9)
+     {:obs/kind :error :obs/pid :query :obs/op :transform :obs/cid nil :obs/about "textDocument/hover" :obs/ex "boom" :at 9})
+;; tail: readable columns
+(chk "tail-request" (nx.stats/tail-line "{:at 1759400000123 :tel/kind :request :op \"textDocument/hover\" :id 7 :outcome :ok :m/inject-us 120 :bytes 311}")
+     "10:13:20.123 request   textDocument/hover                       7 ok             120us     311")
+(chk "tail-uri" (nx.stats/tail-line "{:at 1000 :tel/kind :notify :op \"textDocument/didOpen\" :bytes 70 :uri \"file:///a.clj\"}")
+     "00:00:01.000 notify    textDocument/didOpen                     - -                  -      70  file:///a.clj")
+(chk "tail-error" (nx.stats/tail-line "{:at 2000 :obs/kind :error :obs/pid :query :obs/op :transform :obs/ex \"boom\"}")
+     "00:00:02.000 error     transform                                - -                  -       -  ex=\"boom\" pid=:query")
+(chk "tail-garbage" (nx.stats/tail-line "not edn {") "not edn {")
+(let [s (lat/sanitize (assoc (dissoc pic :lost-join) :procs {:query {:count 3 :status :running} :docs {:count 1 :status 5} "x" 1 :bad {:count -1}}))]
+  (chk "procs-sanitize" (:procs s) {:query {:count 3 :status :running} :docs {:count 1 :status nil}})
+  (chk "procs-roundtrip" (lat/sanitize (read-string (lat/edn-str s))) s)
+  (chk "procs-line" (nx.stats/procs-line s) "    procs docs 1 query 3")
+  (chk "procs-merged-away" (:procs (lat/merge-pictures s s)) nil))
+(println "latency_test ok")

@@ -1,0 +1,10 @@
+;; Heap-image training run (MOVA_IMAGE_TRAIN): lints a bundled sample through
+;; clojure-lsp's didOpen kondo path so hot fns hold compiled IR when the image is written.
+(let [dir (str (or (System/getenv "TMPDIR") "/tmp/") "mova-clojure-lsp-train")
+      sample (str (.getParent (java.io.File. (System/getenv "MOVA_IMAGE_TRAIN"))) "/clojure-lsp-train-sample.clj")
+      text (slurp sample)
+      uri (str "file://" dir "/train/sample.clj")
+      db* (atom {:settings {:kondo-config-dir dir}})]
+  (binding [*out* (java.io.StringWriter.)]
+    (dotimes [_ 2]
+      (clojure-lsp.kondo/run-kondo-on-text! text uri db*))))

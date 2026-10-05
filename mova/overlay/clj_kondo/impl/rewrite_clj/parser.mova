@@ -1,0 +1,98 @@
+(ns ^{:no-doc true} clj-kondo.impl.rewrite-clj.parser
+  (:require [clj-kondo.impl.rewrite-clj.node :as node]
+            [clj-kondo.impl.rewrite-clj.parser.core :as p]
+            [clj-kondo.impl.rewrite-clj.reader :as reader]
+            ;; MOVA-PATCH (mova/PLAN.md, lsp/reader): native CST parser,
+            ;; src/builtins/cst_reader.rs.
+            [mova.reader]))
+
+;; MOVA-PATCH (lsp/reader): tag keyword -> this library's OWN node ctor,
+;; called bottom-up by the Rust parser. Kept in sync by hand with the
+;; node-kind list in cst_reader.rs's module doc; any tag missing here (or
+;; any construct the Rust side doesn't recognize) makes the native call
+;; return `:mova.reader/fallback` and `parse-string`/`parse-string-all`
+;; below re-parse with the original interpreted path.
+;;
+;; `:attach-reader-meta` and `:ignore-meta` aren't node ctors -- they're
+;; the two record-field-update helpers `^`/`#^` and `#_` need (see
+;; cst_reader.rs's module doc for why those two never become ordinary
+;; ctor'd/position-wrapped nodes), reusing `parser.core`'s own (public)
+;; `lconj`/`ignore-meta` so they can never drift from the interpreted
+;; implementation.
+(def ^:private native-ctors
+  {:token node/token-node
+   :keyword node/keyword-node
+   :string node/string-node
+   :list node/list-node
+   :vector node/vector-node
+   :map node/map-node
+   :set node/set-node
+   :fn node/fn-node
+   :quote node/quote-node
+   :syntax-quote node/syntax-quote-node
+   :unquote node/unquote-node
+   :unquote-splicing node/unquote-splicing-node
+   :deref node/deref-node
+   :var node/var-node
+   :eval node/eval-node
+   :regex node/regex-node
+   :namespaced-map node/namespaced-map-node
+   :reader-macro node/reader-macro-node
+   :forms node/forms-node
+   :attach-reader-meta (fn [value-node meta-node] (update value-node :meta p/lconj meta-node))
+   :ignore-meta p/ignore-meta})
+
+;; ## Parser Core
+
+(defn parse
+  "Parse next form from the given reader."
+  [reader]
+  (p/parse-next reader))
+
+(defn parse-all
+  "Parse all forms from the given reader."
+  [reader]
+  (let [nodes (->> (repeatedly #(parse reader))
+                   (take-while identity)
+                   (doall))]
+    (with-meta
+      (node/forms-node nodes)
+      (meta (first nodes)))))
+
+;; ## Specialized Parsers
+
+(defn parse-string
+  "Parse first form in the given string."
+  [s]
+  ;; MOVA-PATCH (lsp/reader): native path first; `:mova.reader/fallback`
+  ;; (any unsupported construct or lex/parse error) re-parses with the
+  ;; original interpreted reader/parser so output and error
+  ;; messages/positions stay byte-identical.
+  (let [native (mova.reader/parse-string s native-ctors)]
+    (if (= native :mova.reader/fallback)
+      (parse (reader/string-reader s))
+      native)))
+
+(defn parse-string-all
+  "Parse all forms in the given string."
+  [s]
+  ;; MOVA-PATCH (lsp/reader): native path first, same fallback contract
+  ;; as `parse-string` above.
+  (let [native (mova.reader/parse-string-all s native-ctors)]
+    (if (= native :mova.reader/fallback)
+      (parse-all (reader/string-reader s))
+      native)))
+
+(defn parse-file
+  "Parse first form from the given file."
+  [f]
+  ;; MOVA-PATCH (lsp/reader): route through the native-accelerated
+  ;; `parse-string` instead of a streaming file reader -- callers only
+  ;; ever want the fully-realized AST, so slurping first costs nothing
+  ;; semantically and lets one string-based fast path cover files too.
+  (parse-string (slurp f)))
+
+(defn parse-file-all
+  "Parse all forms from the given file."
+  [f]
+  (parse-string-all (slurp f)))

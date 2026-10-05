@@ -1,0 +1,62 @@
+{:paths ["scripts"
+         "cli/integration-test"]
+ :deps {borkdude/gh-release-artifact {:git/url "https://github.com/borkdude/gh-release-artifact"
+                                      :git/sha "4a9a74f0e50e897c45df8cc70684360eb30fce80"}
+
+        medley/medley {:mvn/version "1.4.0"}
+        com.github.clojure-lsp/lsp4clj {:mvn/version "2.0.1"
+                                        #_#_:local/root "../../lsp4clj"}
+        org.babashka/spec.alpha {:git/url "https://github.com/babashka/spec.alpha"
+                                 :git/sha "b6eb0f2208ab036c0a5d0e7235cb0b09d2feabb7"}}
+ :min-bb-version "0.8.156"
+ :tasks {get-last-changelog-entry ci/get-last-changelog-entry
+         release-artifact clojure-lsp.release-artifact/release
+
+         clean make/clean
+
+         lib-pom make/lib-pom
+         cli-pom make/cli-pom
+         test-helper-pom make/test-helper-pom
+
+         lib-jar make/lib-jar
+         server-jar make/server-jar
+         server-install make/server-install
+         standalone-install make/standalone-install
+         cli-debug-jar make/cli-debug-jar
+         cli-prod-jar make/cli-prod-jar
+         test-helper-jar make/test-helper-jar
+
+         debug-cli make/debug-cli
+         prod-cli make/prod-cli
+         native-cli make/native-cli
+         native-cli-pgo-instrument make/native-cli-pgo-instrument
+
+         test-reflection make/test-reflection
+         test-lib make/test-lib
+         test-cli make/test-cli
+         test {:doc "Run all unit tests."
+               :depends [test-reflection test-lib test-cli]}
+
+         pod-test make/pod-test
+         integration-test make/integration-test
+
+         performance-test make/performance-test
+
+         lint-clean make/lint-clean
+         lint-format make/lint-format
+         lint-diagnostics make/lint-diagnostics
+         lint-fix make/lint-fix
+         lint {:doc "Run all linters in dry mode."
+               :task (doseq [linter '[lint-clean lint-format lint-diagnostics]]
+                       (println :running-task linter)
+                       (run linter))}
+
+         release make/release
+
+         bump-clj-kondo bump-kondo/bump-clj-kondo
+
+         deploy-clojars make/deploy-clojars
+         deploy-clojars-standalone make/deploy-clojars-standalone
+         deploy-clojars-test-helper make/deploy-clojars-test-helper
+
+         local-webpage make/local-webpage}}

@@ -1,0 +1,553 @@
+(ns clojure-lsp.feature.java-interop
+  (:require
+   [babashka.fs :as fs]
+   [clojure-lsp.config :as config]
+   [clojure-lsp.db :as db]
+   [clojure-lsp.http :as http]
+   [clojure-lsp.kondo :as lsp.kondo]
+   [clojure-lsp.logger :as logger]
+   [clojure-lsp.producer :as producer]
+   [clojure-lsp.settings :as settings]
+   [clojure-lsp.shared :as shared]
+   [clojure.java.io :as io]
+   [clojure.string :as string])
+  (:import
+   (java.io File)
+   (java.net JarURLConnection URL)
+   (java.nio.file Path)
+   (java.util.jar JarFile JarFile$JarFileEntry)
+   (java.util.zip ZipInputStream)
+   (org.benf.cfr.reader.api CfrDriver CfrDriver$Builder)))
+
+(set! *warn-on-reflection* true)
+
+(def ^:private java-logger-tag "[java]")
+
+(defn ^:private decompile! [^String input-path ^String output-path]
+  (let [driver ^CfrDriver (.. (CfrDriver$Builder.)
+                              ;; CFR stout is not reliable, prefer output to file so we can read later
+                              (withOptions {"outputdir" output-path})
+                              (build))
+        err-sym (java.io.StringWriter.)]
+    (binding [*err* err-sym]
+      (with-out-str
+        (.analyse driver [input-path]))
+      (when-not (string/blank? (str err-sym))
+        (logger/warn java-logger-tag "Non-fatal error from CFR:" (str err-sym))))))
+
+(defn ^:private jar->java-project-info [^JarFile jar]
+  (->> (enumeration-seq (.entries jar))
+       (keep
+         (fn [^JarFile$JarFileEntry entry]
+           (let [name (.getName entry)]
+             (when-not (.isDirectory entry)
+               (when (and (string/starts-with? name "META-INF")
+                          (string/ends-with? name "pom.xml"))
+                 (let [pom-stream (.getInputStream jar entry)
+                       pom-content (slurp pom-stream)
+                       [_ group-id] (re-find #"<groupId>(.+)</groupId>" pom-content)
+                       [_ artifact-id] (re-find #"<artifactId>(.+)</artifactId>" pom-content)
+                       [_ version] (re-find #"<version>(.+)</version>" pom-content)
+                       [_ source-path] (or (re-find #"<sourceDirectory>(.+)</sourceDirectory>" pom-content)
+                                           [nil "src"])]
+                   {:jar-path (.getName jar)
+                    :group-id group-id
+                    :artifact-id artifact-id
+                    :version version
+                    :source-path source-path
+                    :pom-content pom-content}))))))
+       first))
+
+(defn ^:private decompile-file ^String [^JarFile jar entry db]
+  (let [cache-path (config/local-cache-dir db)
+        class-file (io/file cache-path "java" "classes" (str entry))
+        decompile-folder-file (io/file cache-path "java" "decompiled")
+        java-file (io/file decompile-folder-file (string/replace (str entry) #".class$" ".java"))]
+    (io/make-parents class-file)
+    (with-open [stream (.getInputStream jar entry)]
+      (io/copy stream class-file))
+    (logger/info java-logger-tag (format "Decompiling java class %s" class-file))
+    (decompile! (.getCanonicalPath class-file) (.getCanonicalPath decompile-folder-file))
+    (shared/filename->uri (.getCanonicalPath java-file) db)))
+
+(defn ^:private decompile-jar-as-java-project ^String
+  [{:keys [group-id artifact-id version jar-path source-path pom-content]}
+   ^JarFile$JarFileEntry entry
+   db
+   producer]
+  (let [prefix-path (io/file group-id artifact-id (str artifact-id "-" version))
+        cache-path (config/global-cache-dir)
+        project-folder (io/file cache-path "java" "decompiled" prefix-path)
+        project-source-folder (io/file project-folder source-path)
+        projectile-file (io/file project-folder ".projectile")
+        pom-file (io/file project-folder "pom.xml")
+        dest-path (io/file project-source-folder (string/replace (.getName entry) #".class$" ".java"))
+        dest-uri (shared/filename->uri (.getCanonicalPath dest-path) db)]
+    (if (shared/file-exists? pom-file)
+      (logger/info java-logger-tag (format "Already decompiled jar %s" jar-path))
+      (do
+        (producer/show-message producer "Decompiling jar for the first time, please wait..." :info nil)
+        (logger/info java-logger-tag (format "Decompiling whole jar %s" jar-path))
+        (io/make-parents pom-file)
+        (spit pom-file pom-content)
+        (spit projectile-file "")
+        (shared/logging-task :internal/decompile-jar
+                             (decompile! jar-path (.getCanonicalPath project-source-folder)))
+        (logger/info java-logger-tag (format "Decompiled jar %s" jar-path))))
+    dest-uri))
+
+(defn ^:private uri->translated-file! [uri db producer]
+  ;; TODO consider decompiling local class files not necessarly
+  ;; from inside a jar
+  (if (and (shared/jar-file? uri)
+           (shared/class-file? uri))
+    (let [jar-uri (shared/ensure-jarfile uri db)
+          url (URL. jar-uri)
+          connection ^JarURLConnection (.openConnection url)
+          jar (.getJarFile connection)
+          entry (.getJarEntry connection)
+          decompiled-uri (if-let [java-project-info (and (settings/get db [:java :decompile-jar-as-project?] true)
+                                                         (jar->java-project-info jar))]
+                           (decompile-jar-as-java-project java-project-info entry db producer)
+                           (decompile-file jar entry db))]
+      (if-let [inner-class-pos (string/index-of decompiled-uri "$")]
+        (str (subs decompiled-uri 0 inner-class-pos)
+             ".java")
+        decompiled-uri))
+    uri))
+
+(defn uri->translated-uri [uri db producer]
+  (uri->translated-file! uri db producer))
+
+(defn read-content! [uri db producer]
+  (let [u (uri->translated-file! uri db producer)]
+    ;; MOVA-PATCH: jar entry uris via JarFile (no zipfile:/jar: URL handlers on Mova).
+    (if (shared/jar-entry-uri? u)
+      (or (shared/slurp-jar-uri u) (throw (ex-info (str "No such jar entry: " u) {:uri u})))
+      (slurp u))))
+
+(def ^:private jdk-source-zip-filename "src.zip")
+
+(defn ^:private jdk-path->jdk-source-paths [^File root-path]
+  (when root-path
+    (let [parent (.getParentFile root-path)]
+      [(io/file root-path jdk-source-zip-filename)
+       (io/file root-path "lib" jdk-source-zip-filename)
+       (io/file parent jdk-source-zip-filename)
+       (io/file parent "lib" jdk-source-zip-filename)])))
+
+(defn ^:private find-local-jdk-source [java-home]
+  (let [java-home (some-> (or java-home
+                              (config/get-property "java.home")
+                              (config/get-env "JAVA_HOME")) io/file)
+        paths (concat []
+                      (jdk-path->jdk-source-paths java-home)
+                      (->> (fs/which-all "java")
+                           (map (comp
+                                  jdk-path->jdk-source-paths
+                                  #(some-> ^File % .getParentFile .getParentFile)
+                                  #(.toFile ^Path %)
+                                  fs/real-path))
+                           flatten))]
+    (some->> paths
+             (filter #(.canRead ^File %))
+             first)))
+
+(defn ^:private download-jdk!
+  [^String jdk-download-url
+   ^File dest-jdk-file]
+  (shared/logging-task
+    :java-interop/download-jdk
+    (try
+      (let [{:keys [body content-type status error]} (http/request! jdk-download-url)]
+        (if (or error
+                (not= 200 status))
+          (logger/error java-logger-tag "Could not download JDK source." error)
+          ;; TODO handle more common downloadable content-types
+          (case content-type
+            "application/zip"
+            (with-open [stream (ZipInputStream. body)]
+              (loop [entry (.getNextEntry stream)]
+                (when entry
+                  (let [savePath (str dest-jdk-file File/separatorChar (.getName entry))
+                        saveFile (File. savePath)]
+                    (if (.isDirectory entry)
+                      (when-not (.exists saveFile)
+                        (.mkdirs saveFile))
+                      (let [parentDir (File. (.substring savePath 0 (.lastIndexOf savePath (int File/separatorChar))))]
+                        (when-not (.exists parentDir)
+                          (.mkdirs parentDir))
+                        (clojure.java.io/copy stream saveFile)))
+                    (recur (.getNextEntry stream)))))
+              true)
+            (logger/error java-logger-tag "Could not download JDK source, unknown content-type" content-type))))
+      (catch Exception e
+        (logger/error java-logger-tag "Error Downloading JDK source." e)))))
+
+(defn ^:private analyze-and-cache-jdk-source! [paths new-checksums db*]
+  (let [results (shared/logging-task
+                  :java-interop/analyze-jdk-source
+                  (lsp.kondo/run-kondo-on-jdk-source! paths @db*))]
+    (swap! db* #(-> %
+                    (lsp.kondo/db-with-results results)
+                    (update :analysis-checksums merge new-checksums)))
+    (db/read-and-update-global-cache!
+      (fn [db]
+        (-> db
+            (update :analysis-checksums merge new-checksums)
+            (update :analysis merge (:analysis results))
+            (assoc :version db/version))))))
+
+;;;; Lazy/on-demand java member definitions
+;;
+;; When `[:analysis :java :member-definitions]` is `:lazy` (the default), the
+;; heavy java-member-definitions bucket is skipped during the upfront classpath
+;; scan. We keep java-class-definitions eager, so when the user navigates to,
+;; hovers or completes a java member we can map the class to its jar and analyze
+;; that jar's members on demand, caching the result in memory for the session.
+
+(defn ^:private class-definition-uri->jar-path [uri]
+  (when uri
+    (let [[_ jar-path] (re-find #"^(.*\.jar):" (shared/uri->filename uri))]
+      jar-path)))
+
+(defn ^:private java-class-definitions-seq [db]
+  (for [[_ buckets] (:analysis db)
+        class-def (:java-class-definitions buckets)]
+    class-def))
+
+(defn ^:private jars-defining-class [db match-class?]
+  (into #{}
+        (comp (filter (comp match-class? :class))
+              (keep (comp class-definition-uri->jar-path :uri)))
+        (java-class-definitions-seq db)))
+
+(defn ^:private class-members-loaded? [db match-class?]
+  (boolean
+    (some (fn [[_ buckets]]
+            (some (comp match-class? :class) (:java-member-definitions buckets)))
+          (:analysis db))))
+
+(defn ^:private analyze-jar-members! [db* jar-path]
+  (let [results (shared/logging-task
+                  :java-interop/analyze-jar-members
+                  (lsp.kondo/run-kondo-on-jar-members! jar-path @db*))]
+    (swap! db* #(-> %
+                    ;; merge (not replace) so the java-class-definitions analyzed
+                    ;; up front at these jar member uris are kept.
+                    (lsp.kondo/db-with-merged-analysis results)
+                    (update :lazily-analyzed-jars (fnil conj #{}) jar-path)))))
+
+(defn ^:private ensure-jars-analyzed! [db* jar-paths]
+  (let [analyzed (:lazily-analyzed-jars @db*)]
+    (doseq [jar-path jar-paths
+            :when (not (contains? analyzed jar-path))]
+      (analyze-jar-members! db* jar-path)))
+  @db*)
+
+(defn ^:private ensure-members-analyzed! [db* match-class?]
+  (let [db @db*]
+    (if (and (lsp.kondo/lazy-java-member-definitions? db)
+             (not (class-members-loaded? db match-class?)))
+      (ensure-jars-analyzed! db* (jars-defining-class db match-class?))
+      db)))
+
+(defn ensure-java-class-members-analyzed!
+  "Analyze on demand the jar(s) defining `full-class-name` so its java member
+  definitions become available for navigation/hover. No-op in eager/off mode or
+  when already analyzed. Returns the current db value."
+  [db* full-class-name]
+  (if full-class-name
+    (ensure-members-analyzed! db* #(= full-class-name %))
+    @db*))
+
+(defn ensure-java-static-members-analyzed!
+  "Analyze on demand the jar(s) defining classes whose simple name matches
+  `simple-class-name`, used by java static-member completion. No-op in
+  eager/off mode or when already analyzed. Returns the current db value."
+  [db* simple-class-name]
+  (if simple-class-name
+    (ensure-members-analyzed! db* #(= simple-class-name (last (string/split % #"\."))))
+    @db*))
+
+(def ^:private default-jdk-source-uri
+  "https://raw.githubusercontent.com/clojure-lsp/jdk-source/main/openjdk-19/reduced/source.zip")
+
+(defn ^:private jdk-analysis-decision
+  [installed-jdk-source-uri
+   custom-jdk-source-uri
+   local-jdk-source-file*
+   download-jdk-source?]
+  (cond
+    (and installed-jdk-source-uri
+         (or (not custom-jdk-source-uri)
+             (= installed-jdk-source-uri custom-jdk-source-uri)))
+    {:result :jdk-already-installed}
+
+    (and (not custom-jdk-source-uri)
+         @local-jdk-source-file*)
+    {:result :automatic-local-jdk
+     :jdk-zip-file @local-jdk-source-file*}
+
+    ;; Local custom zip as uri
+    (and custom-jdk-source-uri
+         (shared/plain-uri? custom-jdk-source-uri))
+    {:result :manual-local-jdk
+     :jdk-zip-file (io/file (shared/uri->filename custom-jdk-source-uri))}
+
+    ;; Local custom zip as file path
+    (and custom-jdk-source-uri
+         (not (shared/valid-url? custom-jdk-source-uri)))
+    {:result :manual-local-jdk
+     :jdk-zip-file (io/file custom-jdk-source-uri)}
+
+    download-jdk-source?
+    {:result :download-jdk
+     :download-uri (or custom-jdk-source-uri default-jdk-source-uri)}
+
+    :else
+    {:result :no-source-found}))
+
+(defn ^:private jdk-dir->java-filenames [^File jdk-dir]
+  (keep (fn [^File file]
+          (let [path (.getCanonicalPath file)]
+            (when (and (.isFile file)
+                       (string/ends-with? path ".java"))
+              path)))
+        (file-seq jdk-dir)))
+
+(defn ^:private read-installed-jdk-source-uri [jdk-result-file]
+  (and (shared/file-exists? jdk-result-file)
+       (slurp jdk-result-file)))
+
+;; MOVA-PATCH: lazy JDK global-cache load -- defer the large db/read-global-cache
+;; decode until a java-interop feature (completion/definition on a java class)
+;; actually needs it, instead of forcing it unconditionally right after initialize.
+(defonce ^:private lazy-db* (atom nil))
+(defonce ^:private jdk-load* (atom nil))
+
+;; MOVA-PATCH: Mova-only pre-canonicalized JDK cache next to the shared transit
+;; cache (never rewritten). Dir db.mova-jdk-<mtime>-<size>/ keyed on the source
+;; cache stamp: classes.edn ({:uris [..] :defs [[class-def ..] ..]}),
+;; checksums.edn, m/<n>.edn (member defs of uri n). Lets a first java definition
+;; read ~4 MB + one small file instead of decoding the 70 MB transit cache.
+(defn ^:private fast-cache-root [] (config/global-cache-dir))
+
+(defn ^:private fast-cache-dir []
+  (let [src (io/file (fast-cache-root) "db.transit.json")]
+    (when (.exists src)
+      (io/file (fast-cache-root) (str "db.mova-jdk-" (.lastModified src) "-" (.length src))))))
+
+(defn ^:private read-edn-file [f] (read-string (slurp f)))
+
+(defonce ^:private fast-index* (atom nil))
+
+(defn ^:private fast-index
+  "Class index of the fast cache: {:dir d :uris [..] :class->defs {class [def ..]}}, or ::none."
+  []
+  (or @fast-index*
+      (reset! fast-index*
+              (or (try
+                    (when-let [dir (fast-cache-dir)]
+                      (let [cf (io/file dir "classes.edn")]
+                        (when (.exists cf)
+                          (let [{:keys [uris defs]} (read-edn-file cf)]
+                            {:dir dir
+                             :uris uris
+                             :class->defs (group-by :class (apply concat defs))}))))
+                    (catch Throwable e
+                      (logger/warn java-logger-tag "fast JDK cache unreadable:" (str e))
+                      nil))
+                  ::none))))
+
+(defn ^:private fast-members [{:keys [dir uris]} uri]
+  (let [n (.indexOf ^java.util.List uris uri)
+        f (when (>= n 0) (io/file dir "m" (str n ".edn")))]
+    (when (and f (.exists f))
+      (read-edn-file f))))
+
+(defn jdk-class-known?
+  "true/false when the fast JDK cache says whether `class-name` is a JDK class, nil if no fast cache."
+  [class-name]
+  (let [idx (fast-index)]
+    (when (map? idx)
+      (contains? (:class->defs idx) class-name))))
+
+(defn find-jdk-definition-fast
+  "Definition of a JDK class (or of its member `method-name`) from the fast cache,
+  without loading the whole JDK analysis. nil when unavailable (caller falls back)."
+  [class-name method-name]
+  (when (nil? @jdk-load*)
+    (let [idx (fast-index)]
+      (when (map? idx)
+        (when-let [defs (get (:class->defs idx) class-name)]
+          (or (when method-name
+                (some (fn [d]
+                        (some #(when (and (= class-name (:class %)) (= method-name (:name %))) %)
+                              (fast-members idx (:uri d))))
+                      defs))
+              (first defs)))))))
+
+(defn ^:private write-fast-cache!
+  "Writes the fast cache from a canonicalized global analysis."
+  [analysis checksums]
+  (try
+    (when-let [dir (fast-cache-dir)]
+      (when-not (.exists (io/file dir "classes.edn"))
+        (let [tmp (io/file (str dir ".tmp" (System/nanoTime)))
+              uris (vec (keys analysis))]
+          (io/make-parents (io/file tmp "m" "x"))
+          (doseq [[n uri] (map-indexed vector uris)]
+            (when-let [ms (seq (:java-member-definitions (get analysis uri)))]
+              (spit (io/file tmp "m" (str n ".edn")) (pr-str (vec ms)))))
+          (spit (io/file tmp "checksums.edn") (pr-str checksums))
+          (spit (io/file tmp "classes.edn")
+                (pr-str {:uris uris
+                         :defs (mapv #(vec (:java-class-definitions (get analysis %))) uris)}))
+          (doseq [^File old (.listFiles (io/file (fast-cache-root)))]
+            (when (and (string/starts-with? (.getName old) "db.mova-jdk-")
+                       (not= (.getName old) (.getName tmp)))
+              (fs/delete-tree old)))
+          (move-file (str tmp) (str dir)))))
+    (catch Throwable e
+      (logger/warn java-logger-tag "could not write fast JDK cache:" (str e)))))
+
+(defn ^:private read-fast-full
+  "Full analysis + checksums from the fast cache, or nil."
+  []
+  (try
+    (let [idx (fast-index)]
+      (when (map? idx)
+        (let [{:keys [dir uris]} idx
+              defs (:defs (read-edn-file (io/file dir "classes.edn")))
+              analysis (reduce
+                         (fn [m [n uri]]
+                           (let [mf (io/file dir "m" (str n ".edn"))
+                                 cds (nth defs n)]
+                             (assoc m uri (cond-> {}
+                                            (seq cds) (assoc :java-class-definitions cds)
+                                            (.exists mf) (assoc :java-member-definitions (read-edn-file mf))))))
+                         {}
+                         (map-indexed vector uris))]
+          {:analysis analysis
+           :analysis-checksums (read-edn-file (io/file dir "checksums.edn"))})))
+    (catch Throwable e
+      (logger/warn java-logger-tag "fast JDK cache full read failed:" (str e))
+      nil)))
+
+
+(defn register-db!
+  "Remember the session db* atom so ensure-jdk-source-analyzed! can force the
+  JDK source analysis load on demand later, without threading db* through
+  every caller (queries.clj, completion.clj)."
+  [db*]
+  (reset! lazy-db* db*))
+
+(defn ensure-jdk-source-analyzed!
+  "Force the JDK global-cache load + merge if it hasn't happened yet this
+  session, and return the db to query: the caller's `db` snapshot predates the
+  load, so it gets the current @db* instead (else the first java definition /
+  completion of a session came back empty). Concurrent first callers wait for
+  the same load. Returns `db` as-is if register-db! was never called."
+  [db]
+  (if-let [db* @lazy-db*]
+    (do (when-not @jdk-load*
+          (compare-and-set! jdk-load* nil (delay (retrieve-jdk-source-and-analyze! db*))))
+        @@jdk-load*
+        @db*)
+    db))
+
+(defn retrieve-jdk-source-and-analyze!
+  "Find JDK source and analyze it with clj-kondo for java class definitions.
+
+  If user has custom :jdk-source-uri, we don't try to find JDK source local
+  or download it, we make sure zip is extracted otherwize extract it.
+
+  If no custom URI set, we try to find a local JDK source on Java
+  instalation which is present most of the time and extract to global
+  cache dir.
+
+  Otherwise, we download default OpenJDK source if setting is enabled."
+  [db*]
+  (shared/logging-task
+    :java-interop/retrieve-jdk-source-and-analyze     ;; unzipping jdk and running kondo for it (kondo part is logged as well)
+    (let [db @db*
+          jdk-dir-file (io/file (config/global-cache-dir) "jdk")
+          jdk-result-file (io/file jdk-dir-file "result")
+          installed-jdk-source-uri (read-installed-jdk-source-uri jdk-result-file)
+          {custom-jdk-source-uri :jdk-source-uri java-home :home-path} (settings/get db [:java])
+          local-jdk-source-file* (delay (find-local-jdk-source java-home))
+          download-jdk-source? (settings/get db [:java :download-jdk-source?] false)
+          global-db* (delay (db/read-global-cache))
+          fast* (delay (read-fast-full))
+          {:keys [result jdk-zip-file download-uri]} (jdk-analysis-decision
+                                                       installed-jdk-source-uri
+                                                       custom-jdk-source-uri
+                                                       local-jdk-source-file*
+                                                       download-jdk-source?)]
+      (io/make-parents jdk-result-file)
+      (case result
+        :jdk-already-installed
+        (logger/info java-logger-tag "JDK source already present on global LSP cache dir.")
+
+        :automatic-local-jdk
+        (do
+          (logger/info java-logger-tag (format "Automatically found local JDK source zip at %s, extracting to global LSP cache dir..." jdk-zip-file))
+          (fs/unzip jdk-zip-file jdk-dir-file {:replace-existing true})
+          (spit jdk-result-file (shared/filename->uri (.getCanonicalPath ^File jdk-zip-file) db)))
+
+        :manual-local-jdk
+        (do
+          (logger/info java-logger-tag (format "Using provided local JDK source URI %s, extracting to global LSP cache dir..." jdk-zip-file))
+          (fs/unzip jdk-zip-file jdk-dir-file {:replace-existing true})
+          (spit jdk-result-file (shared/filename->uri (.getCanonicalPath ^File jdk-zip-file) db)))
+
+        :download-jdk
+        (do
+          (logger/info java-logger-tag "Downloading JDK source to global LSP cache dir...")
+          (when (download-jdk! download-uri jdk-dir-file)
+            (spit jdk-result-file download-uri)))
+
+      ;; else
+        (logger/warn java-logger-tag "Skipping download JDK source, setting `:java :download-jdk-source?` is disabled."))
+
+    ;; keep only java packages
+      (doseq [file-dir (fs/list-dir jdk-dir-file)]
+        (when-not (or (string/starts-with? (str (fs/relativize jdk-dir-file file-dir)) "java")
+                      (= (str file-dir) (str jdk-result-file)))
+          (fs/delete-tree file-dir)))
+
+      (cond
+      ;; recheck uri is still valid and present
+        (not (read-installed-jdk-source-uri jdk-result-file))
+        (logger/warn java-logger-tag "JDK source not found, skipping java analysis.")
+
+        (and (= :jdk-already-installed result)
+             @fast*)
+        (let [{:keys [analysis analysis-checksums]} @fast*]
+          (swap! db* #(-> %
+                          (lsp.kondo/db-with-analysis {:analysis analysis
+                                                       :external? true})
+                          (update :analysis-checksums merge analysis-checksums)))
+          (logger/info java-logger-tag "JDK source analysis fast cache loaded successfully."))
+
+        (and (= :jdk-already-installed result)
+             @global-db*)
+        (let [global-db @global-db*
+              analysis (lsp.kondo/canonicalize-java-analysis (:analysis global-db))]
+          (swap! db* #(-> %
+                          (lsp.kondo/db-with-analysis {:analysis analysis
+                                                       :external? true})
+                          (update :analysis-checksums merge (:analysis-checksums global-db))))
+          (future (write-fast-cache! analysis (:analysis-checksums global-db)))
+          (logger/info java-logger-tag "JDK source analysis cache loaded successfully."))
+
+        :else
+        (let [java-filenames (jdk-dir->java-filenames jdk-dir-file)
+              {:keys [new-checksums paths-not-on-checksum]} (shared/generate-and-update-analysis-checksums java-filenames @global-db* @db*)]
+          (if (seq paths-not-on-checksum)
+            (do
+              (logger/info java-logger-tag "Analyzing JDK source via clj-kondo...")
+              (analyze-and-cache-jdk-source! paths-not-on-checksum new-checksums db*)
+              (logger/info java-logger-tag "JDK source analyzed and cached successfully."))
+            (logger/info java-logger-tag "JDK source cache loaded successfully.")))))))

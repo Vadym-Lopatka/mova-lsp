@@ -1,0 +1,2 @@
+{:paths ["src"]
+ :deps {clojure-lsp/lib {:local/root "../../lib"}}}

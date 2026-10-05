@@ -1,0 +1,818 @@
+(ns clj-kondo.impl.core
+  "Implementation details of clj-kondo.core"
+  {:no-doc true}
+  (:require
+   [babashka.fs :as fs]
+   [clj-kondo.impl.analysis.java :as java]
+   [clj-kondo.impl.analyzer :as ana]
+   [clj-kondo.impl.config :as config]
+   [clj-kondo.impl.findings :as findings]
+   [clj-kondo.impl.namespace :as kondo.namespace]
+   [clj-kondo.impl.utils :as utils :refer [one-of print-err! map-vals assoc-some
+                                           ->uri]]
+   [clojure.edn :as edn]
+   [clojure.java.io :as io]
+   [clojure.string :as str])
+  (:import [java.util.jar JarFile JarFile$JarFileEntry]))
+
+(set! *warn-on-reflection* true)
+
+(def dev? (delay (= "true" (System/getenv "CLJ_KONDO_DEV"))))
+
+(def cache-version "v1")
+
+(defn format-output [config]
+  (let [output-cfg (:output config)]
+    (if-let [^String pattern (-> output-cfg :pattern)]
+      (fn [{:keys [filename row end-row col end-col level message type] :as _finding}]
+        (-> pattern
+            (str/replace "{{filename}}" filename)
+            (str/replace "{{row}}" (str row))
+            (str/replace "{{end-row}}" (str end-row))
+            (str/replace "{{col}}" (str col))
+            (str/replace "{{end-col}}" (str end-col))
+            (str/replace "{{level}}" (name level))
+            (str/replace "{{LEVEL}}" (str/upper-case (name level)))
+            (str/replace "{{message}}" message)
+            (str/replace "{{type}}" (str type))))
+      (fn [{:keys [filename row col level message type langs] :as _finding}]
+        (str filename ":"
+             row ":"
+             col ": "
+             (name level) ": "
+             message
+             (when (and (:langs output-cfg)
+                        (seq langs))
+               (str " [" (str/join ", " (map name langs)) "]"))
+             (when (or (-> output-cfg :show-rule-name-in-message)
+                       (:linter-name output-cfg))
+               (str " [" type "]")))))))
+
+;;;; process config
+
+(declare read-edn-file)
+
+(defn read-fn
+  [^java.io.File cfg-file process-fn file-to-read]
+  (let [f (io/file (.getParent cfg-file) file-to-read)]
+    (if (.exists f)
+      (process-fn f)
+      (binding [*out* *err*]
+        (println "WARNING: included file" (.getCanonicalPath f) "does not exist.")))))
+
+(defn opts [^java.io.File cfg-file]
+  (let [include #(read-fn cfg-file read-edn-file %)]
+    {:readers
+     {'include include
+      ;;'include-edn include
+      ;;'include-string #(read-fn cfg-file slurp %)
+      }}))
+
+(defn read-edn-file [^java.io.File f]
+  (try (edn/read-string (opts f) (slurp f))
+       (catch Exception e
+         (binding [*out* *err*]
+           (println "WARNING: error while reading"
+                    (.getCanonicalPath f) (format "(%s)" (.getMessage e)))))))
+
+(defn- read-config [config]
+  (cond (map? config)
+        config
+        (string? config)
+        (if (or (str/starts-with? config "{")
+                (str/starts-with? config "^"))
+          (edn/read-string config)
+          ;; config is a string that represents a file
+          (read-edn-file (io/file config)))))
+
+(declare resolve-config-paths)
+
+(defn process-cfg-dir
+  "Reads config from dir if not already passed and adds dir to
+  classpath (even if there is no config in it)."
+  ([dir]
+   (let [cfg (let [dir (io/file dir)
+                   f (io/file dir "config.edn")]
+               (when (.exists f)
+                 (read-edn-file f)))]
+     (process-cfg-dir dir cfg)))
+  ([dir cfg]
+   (let [cfg (assoc cfg :classpath [dir])]
+     (resolve-config-paths dir cfg))))
+
+(defn sanitize-path [cfg-dir path]
+  (let [f (io/file path)]
+    (if (.isAbsolute f)
+      (when (.exists f) f)
+      (let [f (io/file cfg-dir path)]
+        (when (.exists f)
+          f)))))
+
+(defn sanitize-paths [cfg-dir paths]
+  (keep #(sanitize-path cfg-dir %) paths))
+
+(defn home-config []
+  (let [home-dir (if-let [xdg-config-home (System/getenv "XDG_CONFIG_HOME")]
+                   (io/file xdg-config-home "clj-kondo")
+                   (io/file (System/getProperty "user.home") ".config" "clj-kondo"))]
+    (when (.exists home-dir)
+      (process-cfg-dir home-dir))))
+
+(defn resolve-config-paths
+  "Takes config from .clj-kondo/config.edn (or other cfg-dir),
+  inspects :config-paths, merges configs from left to right with cfg
+  last."
+  [cfg-dir cfg]
+  (if-let [config-paths (seq (:config-paths cfg))]
+    (if-let [paths (seq (sanitize-paths cfg-dir config-paths))]
+      (let [configs (map process-cfg-dir paths)
+            merged (reduce config/merge-config! nil configs)
+            ;; cfg is merged last
+            cfg (config/merge-config! merged cfg)]
+        cfg)
+      cfg)
+    cfg))
+
+(defn auto-configs [cfg-dir local-config-paths-set glob]
+  (when cfg-dir
+    (into []
+          (comp (map fs/parent)
+                (map #(fs/relativize cfg-dir %))
+                (map str)
+                (filter #(not (contains? local-config-paths-set %))))
+          (fs/glob cfg-dir glob
+                   {:follow-links true
+                    :max-depth (if (str/starts-with? glob "imports")
+                                 4
+                                 3)}))))
+
+(defn resolve-config [^java.io.File cfg-dir configs ignore-home? debug]
+  (let [local-config (when cfg-dir
+                       (let [f (io/file cfg-dir "config.edn")]
+                         (when (.exists f)
+                           (read-edn-file f))))
+        auto-load-configs? (and cfg-dir
+                                (not (false? (:auto-load-configs local-config))))
+        local-config-paths (:config-paths local-config)
+        local-config-paths-set (set local-config-paths)
+        import-dir-exists (fs/exists? (fs/file cfg-dir "imports"))
+        root-imports (seq (auto-configs cfg-dir local-config-paths-set "**/**/config.edn"))
+        discovered (when auto-load-configs?
+                     (-> (concat root-imports
+                                 (auto-configs cfg-dir local-config-paths-set "imports/**/**/config.edn"))
+                         sort))
+        _ (when (and debug
+                     auto-load-configs?
+                     (seq discovered))
+            (binding [*out* *err*]
+              (run! #(println "[clj-kondo] Auto-loading config path:" %) discovered)))
+        skip-home? (or
+                    ignore-home?
+                    (some-> local-config-paths meta :replace))
+        ;; local config exists implicitly when configs are discovered, even when
+        ;; local-config was nil
+        local-config (if (seq discovered)
+                       (update local-config :config-paths
+                               (fnil into []) (distinct) discovered)
+                       local-config)
+        config
+        (reduce config/merge-config!
+                config/default-config
+                (concat
+                 [(when-not skip-home? (home-config))]
+                 [(when cfg-dir (process-cfg-dir cfg-dir local-config))]
+                 [(when-let [extra-config-dir (System/getenv "CLJ_KONDO_EXTRA_CONFIG_DIR")]
+                    (process-cfg-dir extra-config-dir))]
+                 ;; command line config
+                 (map read-config configs)))
+        config (config/expand-ignore config)]
+    (cond-> config
+      cfg-dir (assoc :cfg-dir (.getCanonicalPath cfg-dir)
+                     :use-import-dir (or import-dir-exists
+                                         (not root-imports))))))
+
+;;;; process cache
+
+(defn resolve-cache-dir [cfg-dir cache cache-dir]
+  (when-let [cache-dir (or cache-dir
+                           ;; for backward compatibility
+                           (when-not (true? cache)
+                             cache)
+                           (when cfg-dir (io/file cfg-dir ".cache")))]
+    (io/file cache-dir cache-version)))
+
+;;;; find cache/config dir
+
+(defn source-file? [filename]
+  (when-let [[_ ext] (re-find #"\.(\w+)$" filename)]
+    (one-of (keyword ext) [:clj :cljs :cljc :cljd :edn :mova
+                           ;; we needed to add this so .clj_kondo files will be
+                           ;; copied from imported configs!
+                           :clj_kondo])))
+
+(defn config-dir
+  ([] (config-dir
+       (io/file
+        (System/getProperty "user.dir"))))
+  ([start]
+   (let [start (io/file start)
+         ;; NOTE: .getParentFile doesn't work on relative files
+         start (.getAbsoluteFile start)
+         start (if (.isFile start)
+                 (.getParentFile start)
+                 start)]
+     (when start
+       (loop [dir start]
+         (let [cfg-dir (io/file dir ".clj-kondo")]
+           (if (.exists cfg-dir)
+             (if (.isDirectory cfg-dir)
+               cfg-dir
+               (throw (Exception. (str cfg-dir " must be a directory"))))
+             (when-let [parent (.getParentFile dir)]
+               (recur parent)))))))))
+
+;;;; jar processing
+
+(defn copy-config-entry
+  [ctx entry-name source cfg-dir use-import-dir?]
+  (try
+    (let [dirs (str/split entry-name #"/")
+          root (rest (drop-while #(not= "clj-kondo.exports" %) dirs))
+          copied-dir (apply io/file (take 2 root))
+          dest (apply io/file cfg-dir (cond-> root
+                                        use-import-dir?
+                                        (->> (cons "imports"))))]
+      (when-not (and (.isFile ^java.io.File dest) (= source (slurp dest)))
+        (swap! (:detected-configs ctx) conj (str copied-dir))
+        (io/make-parents dest)
+        (spit dest source)))
+    (catch Exception e (prn (.getMessage e)))))
+
+;; MOVA-PATCH: ASM isn't on Mova; check once so .class entries aren't parsed (and thrown on) per file.
+(def ^:private asm-available?
+  (delay (try (Class/forName "org.objectweb.asm.ClassReader") true (catch Throwable _ false))))
+
+(defn sources-from-jar
+  [ctx ^java.io.File jar-file canonical? use-import-dir?]
+  (with-open [jar (JarFile. jar-file)]
+    (let [cfg-dir (:config-dir ctx)
+          entries (enumeration-seq (.entries jar))
+          entries (filter (fn [^JarFile$JarFileEntry x]
+                            (let [nm (.getName x)]
+                              (when-not (.isDirectory x)
+                                (when (or (and @asm-available? (str/ends-with? nm ".class"))
+                                          (str/ends-with? nm ".java"))
+                                  (when (and (java/analyze-class-defs? ctx)
+                                             (let [idx (str/index-of nm "$")]
+                                               (or (not idx)
+                                                   (when-let [^Character c (nth nm (inc idx) nil)]
+                                                     (and (Character/isUpperCase c)
+                                                          (Character/isLetter c)
+                                                          (not (str/includes? (subs nm idx) "_"))))))
+                                             (not (str/ends-with? nm "__init.class")))
+                                    ;; MOVA-PATCH: ASM (ClassReader) isn't on Mova; a throw here aborted the whole jar (all its
+                                    ;; clj sources lost -> no jar var-definitions). Skip the class, keep the jar.
+                                    (try
+                                      (java/reg-class-def! ctx {:jar jar
+                                                                :entry x
+                                                                :filename (str (if canonical?
+                                                                                 (str (.getCanonicalPath jar-file))
+                                                                                 (str jar-file))
+                                                                               ":" nm)
+                                                                :file jar-file})
+                                      (catch Throwable _ nil))))
+                                (source-file? nm)))) entries)]
+      ;; Important that we close the `JarFile` so this has to be strict see GH
+      ;; issue #542. Maybe it makes sense to refactor loading source using
+      ;; transducers so we don't have to load the entire source of a jar file in
+      ;; memory at once?
+      (into [] (keep (fn [^JarFile$JarFileEntry entry]
+                       (let [entry-name (.getName entry)
+                             source (slurp (.getInputStream jar entry))]
+                         (if (and cfg-dir
+                                  (str/includes? entry-name "clj-kondo.exports"))
+                           ;; never lint exported hook code
+                           (when (:copy-configs ctx)
+                             ;; only copy when copy-configs is true
+                             (copy-config-entry ctx entry-name source cfg-dir use-import-dir?))
+                           {:uri (->uri (str (.getCanonicalPath jar-file)) entry-name nil)
+                            :filename (str (when canonical?
+                                             (str (.getCanonicalPath jar-file) ":"))
+                                           entry-name)
+                            :source source
+                            :group-id jar-file}))))
+            entries))))
+
+;;;; dir processing
+
+(def file-pat
+  (re-pattern (str/re-quote-replacement (System/getProperty "file.separator"))))
+
+(defn copy-config-file
+  [ctx path cfg-dir use-import-dir?]
+  (try
+    (let [base-file (str path)
+          dirs (str/split base-file file-pat)
+          root (rest (drop-while #(not= "clj-kondo.exports" %) dirs))
+          copied-dir (apply io/file (take 2 root))
+          dest (apply io/file cfg-dir (cond-> root
+                                        use-import-dir?
+                                        (->> (cons "imports"))))]
+      (when-not (and (.isFile ^java.io.File dest) (= (slurp base-file) (slurp dest)))
+        (swap! (:detected-configs ctx) conj (str copied-dir))
+        (io/make-parents dest)
+        (io/copy (io/file base-file) dest)))
+    (catch Exception e (prn (.getMessage e)))))
+
+(defn seen?
+  "Atomically adds f to the seen atom and returns if it changed or not."
+  [f seen debug]
+  (let [[old new]
+        (swap-vals! seen conj f)
+        seen? (= old new)]
+    (when (and debug seen?)
+      (utils/stderr "[clj-kondo] Already seen the file" f "before, skipping"))
+    seen?))
+
+(defn excluded? [ctx filename]
+  (let [re-find (:re-find-memo ctx)]
+    (when-let [pat (-> ctx :config :exclude-files)]
+      (re-find pat (fs/unixify filename)))))
+
+(defn sources-from-dir
+  [ctx dir canonical? use-import-dir?]
+  (let [seen (:seen-files ctx)
+        cfg-dir (:config-dir ctx)
+        files (file-seq dir)
+        debug (:debug ctx)]
+    (keep (fn [^java.io.File file]
+            (let [canonical (.getCanonicalPath file)]
+              (when-not (or (seen? canonical seen debug)
+                            (excluded? ctx (str file)))
+                (let [path (.getPath file)
+                      nm (if canonical?
+                           (.getCanonicalPath file)
+                           (.getPath file))
+                      can-read? (.canRead file)
+                      is-file? (.isFile file)
+                      _ (when (and is-file?
+                                   (java/analyze-class-defs? ctx)
+                                   (or (str/ends-with? nm ".class")
+                                       (str/ends-with? nm ".java")))
+                          (java/reg-class-def! ctx {:filename nm}))
+                      source? (and is-file? (source-file? nm))]
+                  (if (and cfg-dir source?
+                           (str/includes? path "clj-kondo.exports"))
+                    ;; never lint exported hook code, when coming from dir.
+                    ;; should be ok when editing single hook file, it won't be persisted to cache
+                    (when (:copy-configs ctx)
+                      ;; only copy when copy-configs is true
+                      (copy-config-file ctx file cfg-dir use-import-dir?))
+                    (cond
+                      (and can-read? source?)
+                      {:uri (->uri nil nil nm)
+                       :filename nm
+                       :source (slurp file)
+                       :group-id dir}
+                      (and (not can-read?) source?)
+                      (print-err! (str nm ":0:0:") "warning: can't read, check file permissions")
+                      :else nil))))))
+          files)))
+
+;;;; threadpool
+
+;; MOVA-PATCH: LinkedBlockingDeque/CountDownLatch/Executors/Runtime aren't on Mova;
+;; analyze each group via clojure.core/future instead of a raw JVM threadpool+deque.
+(def ^:dynamic *before-group-fn*
+  "MOVA-PATCH: when bound, parallel-analyze's workers call it (no args) before
+  each source group -- clojure-lsp's background pass uses it to yield to an
+  opened file's analysis (see clojure-lsp.shared/await-priority-analyses!)."
+  nil)
+
+(defn analyze-task [ctx group dev?]
+  (try
+    (doseq [{:keys [filename source lang uri]} group]
+      (ana/analyze-input ctx filename uri source lang dev?))
+    (catch Exception e (binding [*out* *err*]
+                          (prn e)))))
+
+(defn ^:private parallel-workers
+  "MOVA-PATCH: bounded worker count (env MOVA_KONDO_THREADS, default 8; M8: 16 -> 8
+  cut end-of-session footprint ~240 -> ~210 MB on lib/, no time loss). One
+  future per group ran 69 threads on clojure-lsp's lib/ and every one convoyed
+  on Mova's global ns mutex (Interp::move_dynamic_ns via apply_macro, `sample`)."
+  []
+  (or (some-> (System/getenv "MOVA_KONDO_THREADS") parse-long (max 1)) 8))
+
+(defn parallel-analyze [ctx sources dev?]
+  (let [source-groups (group-by :group-id sources)
+        source-groups (vec (filter seq (vals source-groups)))
+        _ (reset! (:sources ctx) []) ;; clean up garbage
+        n (count source-groups)
+        ;; MOVA-PATCH (M7): usages of a multi-file run live until its end lints: store them slim (see reg-var-usage! below).
+        ctx (cond-> ctx (> n 1) (assoc ::slim-usages true))
+        next-idx (atom -1)
+        before-group-fn *before-group-fn*
+        ;; MOVA-PATCH: N workers pull groups off a shared index (upstream: fixed
+        ;; threadpool + deque) instead of one unbounded future per group.
+        work (fn []
+               (loop []
+                 (let [i (swap! next-idx inc)]
+                   (when (< i n)
+                     (when before-group-fn (before-group-fn))
+                     (analyze-task ctx (nth source-groups i) dev?)
+                     (recur)))))
+        futs (mapv (fn [_] (future (work))) (range (min n (parallel-workers))))]
+    (run! deref futs)))
+
+;;;; file processing
+
+(defn lang-from-file [file default-language]
+  (if-let [[_ ext] (re-find #"\.(\w+)$" file)]
+    (let [k (keyword ext)]
+      (or (get #{:clj :cljs :cljc :edn} k) (when (= :mova k) :clj)
+          default-language))
+    default-language))
+
+(def path-separator (System/getProperty "path.separator"))
+(def path-separator-pat (re-pattern path-separator))
+
+(defn classpath? [f]
+  (str/includes? f path-separator))
+
+(defn ^:private analyzable-filename? [filename ctx]
+  (let [cfg-dir (:config-dir ctx)]
+    (and (source-file? filename)
+         (not (and cfg-dir
+                   (str/includes? filename "clj-kondo.exports"))))))
+
+(defn ^:private entries-from-jar-count [^java.io.File jar-file ctx]
+  (with-open [jar (JarFile. jar-file)]
+    (->> (.entries jar)
+         enumeration-seq
+         (filter (fn [^JarFile$JarFileEntry entry]
+                   (let [entry-name (.getName entry)]
+                     (and (not (.isDirectory entry))
+                          (analyzable-filename? entry-name ctx)))))
+         count)))
+
+(defn ^:private files-count [paths ctx]
+  (->> paths
+       (map (fn [path]
+              (let [path (str path)
+                    file (io/file path)
+                    file-path (when (.exists file)
+                                (.getCanonicalPath file))]
+                (cond
+                  (and file-path
+                       (str/ends-with? file-path ".jar"))
+                  (entries-from-jar-count file ctx)
+
+                  (and file-path
+                       (.isFile file))
+                  1
+
+                  file-path
+                  (->> (file-seq file)
+                       (filter (fn [^java.io.File f]
+                                 (and (.canRead f)
+                                      (.isFile f)
+                                      (analyzable-filename? (.getCanonicalPath f) ctx))))
+                       count)
+
+                  (= "-" path)
+                  1
+
+                  (classpath? path)
+                  (files-count (str/split path path-separator-pat) ctx)
+
+                  :else 0))))
+       (reduce + 0)))
+
+(defn schedule [ctx {:keys [filename source lang uri] :as m} dev?]
+  (if (:parallel ctx)
+    (swap! (:sources ctx) conj m)
+    (when (or (:analysis ctx) (not (:skip-lint ctx)))
+      (ana/analyze-input ctx filename uri source lang dev?))))
+
+(defn process-file [ctx path default-language canonical? filename-fallback use-import-dir]
+  (let [seen-files (:seen-files ctx)]
+    (try
+      (let [path (str path) ;; always assume path to be a string in the body of
+            ;; this function
+            file (io/file path) ;; and file to be a java.io.File
+            canonical (when (.exists file)
+                        ;; calling canonical-path on non-existing
+                        ;; files (e.g. classpaths) can cause errors
+                        (.getCanonicalPath file))
+            debug (:debug ctx)]
+        (cond
+          canonical ;; implies the file exist
+          (if (.isFile file)
+            (when-not (or (seen? canonical seen-files debug)
+                          (excluded? ctx (str file)))
+              (if (str/ends-with? canonical ".jar")
+                ;; process jar file
+                (let [jar-name (.getName file)
+                      config-hash (force (:config-hash ctx))
+                      cache-dir (:cache-dir ctx)
+                      skip-mark (str jar-name "." config-hash)
+                      skip-entry (when cache-dir (io/file cache-dir "skip" skip-mark))]
+                  (if (and cache-dir
+                           (:dependencies ctx)
+                           (not (str/includes? jar-name "SNAPSHOT"))
+                           (.exists skip-entry)
+                           (= path (slurp skip-entry)))
+                    (when-not (:skip-lint ctx)
+                      (utils/stderr "[clj-kondo]" jar-name "was already linted, skipping"))
+                    (do (run! #(schedule ctx (assoc % :lang (lang-from-file (:filename %) default-language))
+                                         @dev?)
+                              (sources-from-jar ctx file canonical? use-import-dir))
+                        (when-not (:skip-lint ctx)
+                          (swap! (:mark-linted ctx) conj [skip-mark path])))))
+                ;; assume normal source file
+                (let [fn (if canonical?
+                           canonical
+                           path)]
+                  (if (or (str/ends-with? canonical ".java")
+                          (str/ends-with? canonical ".class"))
+                    (java/reg-class-def! ctx {:filename canonical})
+                    ;; MOVA-PATCH: give each command-line file its own
+                    ;; :group-id (its own path) so `parallel-analyze`'s
+                    ;; group-by/one-future-per-group scheme spreads N
+                    ;; single-file args across N futures instead of
+                    ;; collapsing them all under the shared `nil` group-id
+                    ;; (and thus one thread) that `group-by` would give an
+                    ;; unset key. Vendor upstream doesn't need this: it
+                    ;; parallelizes over individual scheduled sources via a
+                    ;; raw threadpool+deque, not over :group-id groups.
+                    (schedule ctx {:filename fn
+                                   :uri (->uri nil nil fn)
+                                   :source (slurp file)
+                                   :lang (lang-from-file path default-language)
+                                   :group-id fn}
+                              @dev?)))))
+            ;; assume directory
+            (run! #(schedule ctx (assoc % :lang (lang-from-file (:filename %) default-language)) @dev?)
+                  (sources-from-dir ctx file canonical? use-import-dir)))
+          (= "-" path)
+          (when-not (excluded? ctx filename-fallback)
+            (schedule ctx {:filename (or filename-fallback "<stdin>")
+                           :source (slurp *in*)
+                           :lang (if filename-fallback
+                                   (lang-from-file filename-fallback default-language)
+                                   default-language)} @dev?))
+          (classpath? path)
+          (run! #(process-file ctx % default-language canonical? filename-fallback use-import-dir)
+                (str/split path path-separator-pat))
+          :else
+          (when-not (:skip-lint ctx)
+            (findings/reg-finding! ctx
+                                   {:filename (if canonical?
+                                                ;; canonical path on weird file
+                                                ;; crashes on Windows
+                                                (try (.getCanonicalPath file)
+                                                     (catch Exception _ path))
+                                                path)
+                                    :type :file
+                                    :col 0
+                                    :row 0
+                                    :message "file does not exist"}))))
+      (catch Throwable e
+        (if @dev?
+          (throw e)
+          (when-not (:skip-lint ctx)
+            (findings/reg-finding! ctx {:filename (if canonical?
+                                                    (.getCanonicalPath (io/file path))
+                                                    path)
+                                        :type :file
+                                        :col 0
+                                        :row 0
+                                        :message "Could not process file."})))))))
+
+(defn copied-config-paths [ctx use-import-dir?]
+  (when-let [cfg-dir (io/file (:config-dir ctx))]
+    (let [rel-cfg-dir (str (if (and (.isAbsolute cfg-dir)
+                                    (or (not utils/windows?)
+                                        ;; check if cfg-dir and current dir are on the same drive
+                                        (= (first (str (.getAbsoluteFile (io/file "."))))
+                                           (first (str cfg-dir)))))
+                             ;; MOVA-PATCH: .getAbsoluteFile->.toPath->.normalize loses File/Path
+                             ;; type dispatch on Mova; use the Mova fs shim's relativize (base path),
+                             ;; which is already String-returning.
+                             (fs/relativize (io/file ".") cfg-dir)
+                             cfg-dir))
+          rel-cfg-imports (cond-> (io/file rel-cfg-dir)
+                            use-import-dir?
+                            (io/file "imports"))]
+      (->> ctx
+           :detected-configs
+           deref
+           (map #(->
+                  (io/file rel-cfg-imports %)
+                  str utils/unixify-path))
+           sort
+           distinct
+           seq))))
+
+(defn print-copied-configs [imports cfg-dir]
+  (binding [*out* *err*]
+    (cond (not cfg-dir)
+          (println "No configs copied because config dir (.clj-kondo) does not exist.")
+          (seq imports)
+          (do
+            (println "Configs copied:")
+            (doseq [i imports]
+              (println (str "- " i))))
+          :else (println "No configs copied."))))
+
+(defn process-files [ctx files default-lang filename use-import-dir?]
+  (let [ctx (assoc ctx :seen-files (atom #{}))
+        cache-dir (:cache-dir ctx)
+        ctx (assoc ctx :detected-configs (atom [])
+                   :mark-linted (atom [])
+                   :total-files (when (:file-analyzed-fn ctx)
+                                  (files-count files ctx)))
+        canonical? (-> ctx :config :output :canonical-paths)]
+    (run! #(process-file ctx % default-lang canonical? filename use-import-dir?) files)
+    (when (and (:parallel ctx)
+               (or (:analysis ctx)
+                   (not (:skip-lint ctx))))
+      (parallel-analyze ctx @(:sources ctx) @dev?))
+    (when (and cache-dir (:dependencies ctx))
+      (doseq [[mark path] @(:mark-linted ctx)]
+        (let [skip-file (io/file cache-dir "skip" mark)]
+          (io/make-parents skip-file)
+          (spit skip-file path))))
+    (when (:copy-configs ctx)
+      (print-copied-configs (copied-config-paths ctx use-import-dir?) (:config-dir ctx)))))
+
+;;;; index defs and calls by language and namespace
+
+(defn mmerge
+  "Merges maps no deeper than two levels"
+  [a b]
+  (merge-with merge a b))
+
+(def var-def-keys
+  [:row :col
+   :macro :private :deprecated
+   :fixed-arities :varargs-min-arity
+   :name :ns :top-ns :imported-ns :imported-var
+   :arities :type :class :methods
+   :method-arities])
+
+(defn format-vars [vars]
+  (map-vals (fn [md]
+              (let [v (select-keys md var-def-keys)]
+                (if-let [cd (:comment-def md)]
+                  (assoc v :comment-def (select-keys cd var-def-keys))
+                  v)))
+            vars))
+
+(defn deprecated-val [deprecated]
+  (when deprecated
+    (cond (boolean? deprecated) (true? deprecated)
+          (string? deprecated) deprecated
+          (some? deprecated) true)))
+
+(defn namespaces->indexed [namespaces]
+  (when namespaces
+    (map-vals (fn [{:keys [filename vars proxied-namespaces deprecated]}]
+                (some-> (assoc-some (format-vars vars)
+                                    :proxied-namespaces proxied-namespaces
+                                    :deprecated (deprecated-val deprecated))
+                        (assoc :filename filename)))
+              namespaces)))
+
+(defn namespaces->indexed-cljc [namespaces lang]
+  (when namespaces
+    (map-vals (fn [v]
+                (let [vars (:vars v)
+                      filename (:filename v)
+                      deprecated (:deprecated v)
+                      deprecated (deprecated-val deprecated)]
+                  (cond-> {:filename filename
+                          lang (format-vars vars)}
+                    deprecated (assoc :deprecated deprecated))))
+              namespaces)))
+
+(defn namespaces->indexed-defs [ctx]
+  (let [namespaces @(:namespaces ctx)
+        clj (namespaces->indexed (get-in namespaces [:clj :clj]))
+        cljs (namespaces->indexed (get-in namespaces [:cljs :cljs]))
+        cljc-clj (namespaces->indexed-cljc (get-in namespaces [:cljc :clj])
+                                           :clj)
+        cljc-cljs (namespaces->indexed-cljc (get-in namespaces [:cljc :cljs])
+                                            :cljs)]
+    {:clj {:defs clj}
+     :cljs {:defs cljs}
+     :cljc {:defs (mmerge cljc-clj cljc-cljs)}}))
+
+(defn java-members->indexed [ctx]
+  (when-let [ana (some-> ctx :analysis deref)]
+    (when-let [member-defs (:java-member-definitions ana)]
+      (let [class-infos (group-by :class (:java-class-definitions ana))
+            member-defs (remove #(let [clazz (first (get class-infos (:class %)))]
+                                   (:private (:flags clazz))) member-defs)
+            by-class (group-by :class member-defs)
+            by-class (utils/update-vals by-class
+                                        (fn [clazz]
+                                          {:members
+                                           (-> (group-by :name clazz)
+                                               (utils/update-vals
+                                                (fn [v]
+                                                  (set (map #(select-keys % [:flags]) v)))))}))]
+        by-class))))
+
+(comment
+  (require '[clj-kondo.core] :reload-all)
+  (clj-kondo.core/run! {:lint ["/Users/borkdude/.cache/clojure-lsp/jdk/java.base/java/lang/System.java"]
+                        :config {:analysis {:java-member-definitions true
+                                            :java-class-definitions true}}}))
+
+(defn index-defs-and-calls [ctx]
+  (let [indexed-defs (namespaces->indexed-defs ctx)]
+    (-> (assoc indexed-defs :used-namespaces @(:used-namespaces ctx))
+        (assoc :java-member-definitions (java-members->indexed ctx))
+        (assoc :java-class-usages @(:java-class-usages ctx)))))
+
+;;;; summary
+
+(def zinc (fnil inc 0))
+
+(defn summarize [findings]
+  (reduce (fn [acc finding]
+            (let [level (:level finding)]
+              (update acc level zinc)))
+          {:error 0 :warning 0 :info 0 :type :summary}
+          findings))
+
+;;;; filter/remove output
+
+(defn collapse-cljc-findings [findings]
+  (reduce (fn [acc [_ findings]]
+            (let [langs (keep :lang findings)]
+              (conj acc (assoc (first findings) :langs langs))))
+          []
+          (group-by :message findings)))
+
+(defn filter-findings [ctx config findings]
+  (let [print-debug? (:debug config)
+        filter-output (not-empty (-> config :output :include-files))
+        remove-output (not-empty (-> config :output :exclude-files))
+        re-find (:re-find-memo ctx)
+        cljc-features-count (count (config/cljc-features config))]
+    (for [[[_filename _row _col type cljc] findings] findings
+          :when (or ;; keep findings when:
+                  ;; 1) not multi-dialect
+                  (not cljc)
+                  ;; 2) not linter of interest (and multi-dialect)
+                  (and (not= :redundant-do type)
+                       (not= :redundant-call type)
+                       (not= :redundant-let type)
+                       (not= :redundant-let-binding type)
+                       (not= :single-logical-operand type)
+                       (not= :redundant-nested-call type)
+                       (not= :redundant-ignore type)
+                       (not= :redundant-fn-wrapper type)
+                       (not= :unused-excluded-var type))
+                  ;; 3) findings count matches features analyzed (and multi-dialect and linter of interest)
+                  ;;    (we exclude when all dialects do not agree on finding for a linter of interest).
+                  (= (count findings) cljc-features-count))
+          f (collapse-cljc-findings findings)
+          :let [filename (:filename f)
+                tp (:type f)
+                level (:level f)]
+          :when (and filename level (not= :off level))
+          :when (if (= :debug tp)
+                  print-debug?
+                  true)
+          :when (if filter-output
+                  (some (fn [pattern]
+                          (re-find pattern filename))
+                        filter-output)
+                  true)
+          :when (not-any? (fn [pattern]
+                            (re-find pattern filename))
+                          remove-output)]
+      f)))
+
+;;;; aux
+
+(defn config-hash [cfg]
+  (let [config-bytes (.getBytes (str cfg))
+        digest (java.security.MessageDigest/getInstance "SHA-256")]
+    (utils/bytes->hex (.digest digest config-bytes))))
+
+;; MOVA-PATCH (M7): a usage stored in :namespaces lives until the end lints: store it with a slim :expr and without nil fields (utils/slim-usage-expr, utils/compact-usage). Same guards as reg-var-usage! (else it stores nothing); only in multi-file runs (a single file's usages are few).
+(alter-var-root #'kondo.namespace/reg-var-usage!
+                (fn [reg!]
+                  (fn [ctx ns-sym usage]
+                    (if (or (:dependencies ctx) (:interop? usage) (not (::slim-usages ctx)))
+                      (reg! ctx ns-sym usage)
+                      (reg! ctx ns-sym (utils/slim-usage-expr (utils/compact-usage usage)))))))
+
+;;;; Scratch
+
+(comment)

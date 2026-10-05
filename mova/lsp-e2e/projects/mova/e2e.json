@@ -1,0 +1,3 @@
+{"files": ["src/demo/main.mova", "src/demo/util.mova"],
+ "completion_prefixes": 5,
+ "late_ok": ["mova"]}

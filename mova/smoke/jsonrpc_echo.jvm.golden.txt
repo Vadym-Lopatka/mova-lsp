@@ -1,0 +1,5 @@
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"completionProvider": {"triggerCharacters": [".", ":"]}, "hoverProvider": true, "textDocumentSync": 1}, "serverInfo": {"name": "mova-smoke", "version": "0.1.0"}}}
+{"id": 2, "jsonrpc": "2.0", "result": {"n": 42, "text": "héllo ✓"}}
+{"error": {"code": -32601, "data": {"method": "no/such/method"}, "message": "Method not found"}, "id": 3, "jsonrpc": "2.0"}
+{"jsonrpc": "2.0", "method": "server/notified", "params": {"echo": {"tag": "smoke"}, "from": "server"}}
+EXIT CODE: 0

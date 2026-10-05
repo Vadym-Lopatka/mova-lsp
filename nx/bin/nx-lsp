@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# nx LSP server on Mova Flow (stdio). Module path = nx/src only.
+set -euo pipefail
+# No forks here: each $(..) costs about 1-2 ms of start time.
+case "$0" in */*) NX_DIR="${0%/*}/.." ;; *) NX_DIR=".." ;; esac
+MOVA_BIN="${MOVA_BIN:-mova}"
+export MOVA_REFLECTION_WARNINGS=0
+# Owner defaults: NX_* variables that are not set come from the env file (plain KEY=VALUE lines). A set variable wins.
+NX_ENV="${XDG_CONFIG_HOME:-$HOME/.config}/nx/env"
+if [[ -r "$NX_ENV" ]]; then
+  while IFS='=' read -r k v || [[ -n "$k" ]]; do
+    if [[ "$k" =~ ^NX_[A-Z0-9_]+$ && -z "${!k+x}" ]]; then export "$k=$v"; fi
+  done < "$NX_ENV"
+fi
+# Own heap image (first run writes it, later runs restore it). MOVA_IMAGE= disables.
+if [[ -z "${MOVA_IMAGE+x}" ]]; then
+  export MOVA_IMAGE="${XDG_CACHE_HOME:-$HOME/.cache}/nx/nx.img"
+  [[ -d "${MOVA_IMAGE%/*}" ]] || mkdir -p "${MOVA_IMAGE%/*}"
+fi
+[[ -n "$MOVA_IMAGE" ]] && export MOVA_IMAGE_PRELOAD="${MOVA_IMAGE_PRELOAD:-nx.main}"
+# Metrics on: own image that also holds the fold (nx.metrics), so it does not compile at run time. Off: nothing changes.
+if [[ "${NX_METRICS:-}" == 1 && "$MOVA_IMAGE" == */nx.img && "$MOVA_IMAGE_PRELOAD" == nx.main ]]; then
+  export MOVA_IMAGE="${MOVA_IMAGE%nx.img}nx-met.img" MOVA_IMAGE_PRELOAD=nx.main-met
+fi
+export MOVA_SHARDS="${MOVA_SHARDS:-2}"
+# JIT off: +4 ms at start, nothing to compile yet (hot work is native). MOVA_JIT=1 to enable.
+export MOVA_JIT="${MOVA_JIT:-0}"
+exec "$MOVA_BIN" --module-path "$NX_DIR/src" "$NX_DIR/bin/nx-entry.mova" "$@"

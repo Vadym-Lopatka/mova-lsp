@@ -1,0 +1,109 @@
+;; sci.core SHIM (mova/PLAN.md "hooks (sci)" wave). Design decision (fixed,
+;; see this task's brief): do NOT port sci itself (a from-scratch, ~12k
+;; line Clojure interpreter) -- Mova already IS a Clojure interpreter, so
+;; this shim evaluates the same user code with MOVA'S OWN reader/eval,
+;; inside a fresh, uniquely-prefixed real Mova namespace per `sci/init`
+;; call ("ctx"). This covers exactly the sci surface `clj-kondo`'s
+;; `impl/hooks.clj` and clojure-lsp's `feature/diagnostics/custom.clj` use
+;; (grep-verified against both files): `create-ns`, `init`
+;; (:namespaces/:classes/:imports/:load-fn), `binding` (`sci/out`,
+;; `sci/err`, `sci/file`, `sci/ns`), `eval-string*`. No
+;; `fork`/`copy-var`/`copy-ns` -- neither caller uses them.
+;;
+;; Differs from real sci:
+;; - NO SANDBOXING. Real sci walls off Java/host interop unless explicitly
+;;   allowlisted; this shim runs evaluated code as an ordinary Mova
+;;   namespace with the same `clojure.core` fallback every namespace gets,
+;;   so anything Mova's `clojure.core` exposes is reachable there too.
+;;   Hooks/custom-linter code is locally-configured (same trust level as
+;;   the rest of a linted project's `.clj-kondo`/classpath config), so this
+;;   is an accepted gap, not a silent one -- neither sci nor this shim
+;;   should be pointed at untrusted code.
+;; - `:namespaces` vars are ALIASED into a real Mova namespace via
+;;   `intern` (ordinary vars, not sci's opaque `Var` wrapper).
+;; - `:classes`/`:imports` reach only as far as Mova's own `import`
+;;   special form / host-interop veneer already goes (mova/PLAN.md rule
+;;   3); a class neither side knows is simply unresolvable from evaluated
+;;   code, same failure shape as a missing class on the JVM.
+;; - one real Mova namespace per ctx (uniquely prefixed at `init` time)
+;;   stands in for sci's fully isolated ctx: two ctxs never collide, but
+;;   (unlike real sci) that namespace IS visible to `all-ns`/`the-ns`.
+(ns sci.core
+  (:refer-clojure :exclude [binding create-ns]))
+
+(def ^:dynamic out *out*)
+(def ^:dynamic err *err*)
+(def ^:dynamic file nil)
+
+;; `(sci/binding [sci/out w1 sci/err w2 sci/file f] ...)` /
+;; `(sci/binding [sci/ns n] ...)`. `sci/out`/`sci/err`/`sci/file` are real
+;; dynamic vars (above), so they bind exactly like `clojure.core/binding`
+;; already does. `sci/ns` has no Mova-side var of its own -- it stands for
+;; Mova's own dynamic `*ns*` (real sci's `sci/ns` binding is exactly how it
+;; steers symbol resolution during evaluated code too), so this macro
+;; rewrites only that one binding target to `clojure.core/*ns*` and
+;; delegates the rest verbatim.
+(defmacro binding [bindings & body]
+  (let [pairs (partition 2 bindings)
+        rewrite-target (fn [sym] (if (= (name sym) "ns") 'clojure.core/*ns* sym))
+        mapped (mapcat (fn [[sym val]] [(rewrite-target sym) val]) pairs)]
+    `(clojure.core/binding [~@mapped] ~@body)))
+
+(defonce ^:private ctx-counter (atom 0))
+
+;; `(sci/create-ns sym opts)` -- real sci pre-registers an EMPTY namespace,
+;; used ONLY as a `:namespaces` map key by both this task's callers (e.g.
+;; clj-kondo's `(def ans (sci/create-ns 'clj-kondo.hooks-api nil))`; grep-
+;; verified never dereferenced itself). `:namespaces` vars are aliased into
+;; a real Mova namespace by `init` below (not by this fn), so `create-ns`
+;; only needs to return something usable the same way as a real-namespace
+;; symbol -- the symbol itself already is.
+(defn create-ns
+  ([sym] (create-ns sym nil))
+  ([sym _opts] sym))
+
+;; Builds one fresh, uniquely-prefixed "ctx" map. `:namespaces` becomes
+;; real Mova namespaces: each `ns-sym -> {var-sym value ...}` entry becomes
+;; a real namespace of that exact name, `intern`ed with those values, so
+;; `(require 'that.ns)` from evaluated code just works without ever
+;; touching `:load-fn`. `:load-fn` itself is stored and wired through the
+;; generic `with-load-hook*` primitive only around each `eval-string*` call
+;; below -- matching real sci, which only ever consults it when a require
+;; can't otherwise be satisfied.
+(defn init [{:keys [namespaces classes imports load-fn]}]
+  (let [prefix (str "sci-ctx-" (swap! ctx-counter inc))]
+    (doseq [[ns-sym vars] namespaces]
+      (let [real-ns (symbol (str ns-sym))
+            cur *ns*]
+        (in-ns real-ns)
+        (doseq [[var-sym v] vars]
+          (let [the-var (intern real-ns var-sym v)]
+            (when (:sci/macro (meta v))
+              (alter-meta! the-var assoc :macro true))))
+        (in-ns (ns-name cur))))
+    ;; `:classes`/`:imports`: best-effort only (see header doc) -- Mova's
+    ;; own `import`/host-interop already resolves anything its java.*
+    ;; veneer knows about; there's nothing generic to add on top, so these
+    ;; are recorded but not otherwise acted on here.
+    {:prefix prefix :namespaces namespaces :classes classes :imports imports :load-fn load-fn}))
+
+;; `(sci/eval-string* ctx code)` -- evaluates `code` (a STRING, possibly
+;; several top-level forms, e.g. hooks.clj's `"(require 'ns)\n(var
+;; ns/sym)"`) with Mova's own reader/eval, in the ctx's dedicated
+;; namespace, returning the LAST form's value (`load-string`'s contract,
+;; which is also real sci's own `eval-string*` contract). `:load-fn`, if
+;; given, is active only for this call's dynamic extent via
+;; `with-load-hook*` (mova/PLAN.md rule 3: added natively to Mova because
+;; no existing hook point covered "consult a fn when `require` can't find
+;; a namespace" -- see `src/builtins/nsfns.rs`'s `try_load_hook`).
+(defn eval-string* [ctx code]
+  (let [ns-sym (symbol (str "sci.user." (:prefix ctx)))
+        cur *ns*
+        run (fn []
+              (in-ns ns-sym)
+              (try
+                (load-string code)
+                (finally (in-ns (ns-name cur)))))]
+    (if-let [load-fn (:load-fn ctx)]
+      (with-load-hook* load-fn run)
+      (run))))

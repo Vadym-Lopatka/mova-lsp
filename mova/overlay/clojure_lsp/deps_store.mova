@@ -1,0 +1,277 @@
+(ns clojure-lsp.deps-store
+  "MOVA S1 (mova/DEPS-DESIGN.md): stored records of dependency files (jar / gitlib / lsp-mode copies).
+  A record = the uri-free normalized kondo result for one text, so a later didOpen of the same text
+  skips the kondo run. Immutable files `<root>/e<epoch>/files/<K>.bin`; a bad file is a miss."
+  (:require
+   [clojure-lsp.config :as config]
+   [clojure-lsp.logger :as logger]
+   [clojure-lsp.settings :as settings]
+   [clojure-lsp.shared :as shared]
+   [clojure.java.io :as io]
+   [clojure.string :as string]
+   [cognitect.transit :as transit]))
+
+(def ^:private schema 1)
+(def ^:private logger-tag "[deps-store]")
+
+(defn- md5s [^String s] (mova.digest/md5-hex s))
+
+;; ---- kill switch + root -------------------------------------------------
+
+(defn- env-mode [] (config/get-env "CLOJURE_LSP_DEPS_STORE"))
+
+(defn enabled? [] (not= "off" (env-mode)))
+
+(defn- root-dir ^java.io.File []
+  (let [m (env-mode)]
+    (if (and m (not (string/blank? m)))
+      (io/file m)
+      (io/file (config/global-cache-dir) "mova-deps"))))
+
+;; ---- epoch: store schema + vendored kondo + overlay kondo/normalize/diagnostics sources (once, lazy) ----
+
+(defn- resource-root
+  "Directory that holds resource `rel` (file: urls only), or nil."
+  [rel]
+  (when-let [u (io/resource rel)]
+    (let [s (str u)]
+      (when (string/starts-with? s "file:")
+        (subs s (count "file://") (- (count s) (count rel)))))))
+
+(defn- source-files [^java.io.File dir]
+  (when (and dir (.exists dir))
+    (->> (file-seq dir)
+         (filter #(.isFile ^java.io.File %))
+         (filter #(re-find #"\.(clj|cljc|cljs|edn|mova)$" (str %)))
+         (remove #(string/includes? (str %) "built_in")))))
+
+(defn- compute-epoch []
+  (let [vendor (resource-root "clj_kondo/core.clj")
+        overlay (resource-root "clojure_lsp/deps_store.mova")
+        files (concat (source-files (some-> vendor (io/file "clj_kondo")))
+                      (source-files (some-> overlay (io/file "clj_kondo")))
+                      (keep #(let [f (io/file overlay %)] (when (.exists f) f))
+                            ["clojure_lsp/kondo.mova" "clojure_lsp/deps_store.mova" "clojure_lsp/feature/diagnostics.mova"
+                             "clojure_lsp/feature/diagnostics/custom.mova"]))
+        paths (sort (map str files))]
+    (subs (md5s (apply str schema "|" (map #(str % ":" (md5s (slurp %)) ";") paths))) 0 16)))
+
+(defonce ^:private epoch* (atom nil))
+
+(defn epoch []
+  (or @epoch* (reset! epoch* (compute-epoch))))
+
+(defn- files-dir ^java.io.File []
+  (io/file (root-dir) (str "e" (epoch)) "files"))
+
+;; ---- dependency-file criteria (DEPS-DESIGN section 1) ----
+
+(defn dependency-uri?
+  "True for jar:/zipfile: uris, file:// under a gitlib dir, or a file:// with a sibling `.<base>.metadata`;
+  and only when JVM treats the file as external (shared/external-filename? with known source paths)."
+  [^String uri db]
+  (boolean
+    (try
+      (let [filename (shared/uri->filename uri)]
+        (and (or (shared/external-filename? filename (settings/get db [:source-paths]))
+                 ;; source paths still unknown: classpath-derived ones lie under the root, so outside it = external
+                 (and (empty? (settings/get db [:source-paths]))
+                      (not (string/starts-with? filename (str (shared/uri->filename (:project-root-uri db)) "/")))))
+             (or (string/starts-with? uri "jar:")
+                 (string/starts-with? uri "zipfile:")
+                 (string/includes? filename "/.gitlibs/")
+                 (let [f (io/file filename)
+                       n (.getName f)
+                       base (if-let [i (string/last-index-of n ".")] (subs n 0 i) n)]
+                   (.exists (io/file (.getParentFile f) (str "." base ".metadata")))))))
+      (catch Throwable _ false))))
+
+;; ---- opening set: run-kondo-on-text! consults it, so only didOpen (not didChange) uses the store ----
+
+(defonce ^:private opening* (atom #{}))
+
+(defn opening? [uri] (contains? @opening* uri))
+(defn begin-open! [uri] (swap! opening* conj uri))
+
+(defonce ^:private deferred* (atom {}))
+
+(defn defer-store! [uri thunk] (swap! deferred* assoc uri thunk))
+
+(defn run-deferred!
+  "Run the record write of `uri` (miss path) now: called by did-open after the diagnostics were published."
+  [uri]
+  (when-let [thunk (get @deferred* uri)]
+    (swap! deferred* dissoc uri)
+    (thunk)))
+(defn end-open! [uri] (swap! opening* disj uri))
+
+;; ---- keys ----
+
+(defonce ^:private fp-cache* (atom nil))
+
+(defn- classpath-fingerprint
+  "md5 of the ordered classpath: path + size + mtime for files, path for dirs. Cached per classpath value."
+  [classpath]
+  (let [c @fp-cache*]
+    (if (and c (= (first c) classpath))
+      (second c)
+      (let [fp (md5s (apply str (map (fn [p]
+                                       (let [f (io/file (str p))]
+                                         (if (.isFile f) (str p ":" (.length f) ":" (.lastModified f) ";") (str p ";"))))
+                                     classpath)))]
+        (reset! fp-cache* [classpath fp])
+        fp))))
+
+(defonce ^:private cfg-files-cache* (atom nil))
+
+(defn- config-dir-files-hash
+  "md5 of path+size+mtime of every file (hooks, imports, config.edn) under the kondo config dir, minus .cache; once per dir and process."
+  [^java.io.File cfg-dir]
+  (when cfg-dir
+    (let [c @cfg-files-cache*]
+      (if (and c (= (first c) (str cfg-dir)))
+        (second c)
+        (let [walk (fn walk [^java.io.File d]
+                     (mapcat (fn [^java.io.File f]
+                               (cond (= ".cache" (.getName f)) nil
+                                     (.isDirectory f) (walk f)
+                                     :else [f]))
+                             (.listFiles d)))
+              files (sort-by str (walk cfg-dir))
+              h (md5s (apply str (map #(str (str %) ":" (.length ^java.io.File %) ":" (.lastModified ^java.io.File %) ";") files)))]
+          (reset! cfg-files-cache* [(str cfg-dir) h])
+          h)))))
+
+(defn- lint-profile
+  "L: the resolved single-file kondo config + kondo config hash + files of the config dir (hooks) + home config
+  + clj-depend config + scheme. Simplified vs the design: one profile for analysis and lint."
+  [db {:keys [config kondo-config-hash]}]
+  (let [cfg-dir (some-> (:config-dir config) io/file)
+        home (io/file (config/get-property "user.home") ".config" "clj-kondo" "config.edn")
+        depend-file (io/file (str (shared/uri->filename (:project-root-uri db))) ".clj-depend" "config.edn")]
+    (md5s (pr-str [(dissoc config :filename)
+                   (some-> kondo-config-hash deref)
+                   (config-dir-files-hash cfg-dir)
+                   (when (.exists home) (md5s (slurp home)))
+                   (settings/get db [:clj-depend])
+                   (when (.exists depend-file) (md5s (slurp depend-file)))
+                   (:dependency-scheme db)]))))
+
+(defn context
+  "Key context for opening `uri` with `text`, or nil when the store does not apply (off, not a dependency file,
+  no classpath yet, ignored path). `kondo` = {:config <single-file kondo config> :kondo-config-hash h}."
+  [uri text db kondo]
+  (when (and (enabled?) (dependency-uri? uri db) (seq (:classpath db)) (not (string/blank? text))
+             (contains? #{:clj :cljs :cljc} (shared/uri->file-type uri)))
+    (let [tk (mova.metrics/now-ns)
+          k (md5s (str (md5s text) "|" (lint-profile db kondo) "|" (classpath-fingerprint (:classpath db)) "|"
+                       (name (shared/uri->file-type uri))))]
+      (let [file (io/file (files-dir) (str k ".bin"))] ; epoch hashed here on first use
+        {:key k
+         :key_ns (- (mova.metrics/now-ns) tk)
+         :file file
+         :cache-dir (some-> (:config-dir (:config kondo)) (io/file ".cache" "v1"))}))))
+
+;; ---- uri-free transform (same shape as db.mova's remove/restore-element-uris) ----
+
+(defn- pack-fn [] (or (some-> (resolve 'mova.mem/pack) deref) identity))
+
+(defn- update-elements [analysis f]
+  (let [pack (pack-fn)]
+    (reduce-kv
+      (fn [analysis uri buckets]
+        (assoc analysis uri
+               (reduce-kv (fn [bs bucket els] (assoc bs bucket (pack (mapv (partial f uri) els)))) buckets buckets)))
+      analysis
+      analysis)))
+
+;; ---- record file: "MDS1 <schema> <md5 of body> <chars>\n" + transit body ----
+
+(defn- encode [rec]
+  (let [body (mova.transit/write-json rec)]
+    (str "MDS1 " schema " " (md5s body) " " (count body) "\n" body)))
+
+(defn- decode [^String s]
+  (let [nl (string/index-of s "\n")]
+    (when nl
+      (let [[magic sch sum len] (string/split (subs s 0 nl) #" ")
+            body (subs s (inc nl))]
+        (when (and (= "MDS1" magic) (= (str schema) sch) (= (str (count body)) len) (= sum (md5s body)))
+          (transit/read body))))))
+
+;; ---- read / write ----
+
+(defn- span! [t0 attrs]
+  (when (mova.metrics/enabled?)
+    (mova.metrics/span! "srv.depfile" t0 attrs)))
+
+(defn- restore-cache-files!
+  "COPY the recorded kondo cache files into the project cache (never link: kondo rewrites them in place)."
+  [{:keys [cache-dir]} cache-entries]
+  (when cache-dir
+    (doseq [{:keys [lang ns content]} cache-entries]
+      (try
+        (let [f (io/file cache-dir lang (str ns ".transit.json"))]
+          (when-not (and (.exists f) (= content (slurp f)))
+            (io/make-parents f)
+            (let [tmp (io/file (str f ".s1tmp" (System/nanoTime)))]
+              (spit tmp content)
+              (move-file (str tmp) (str f)))))
+        (catch Throwable e (logger/warn logger-tag "cache copy failed" (str e)))))))
+
+(defn load-result
+  "The normalized kondo result for `uri` from a stored record, or nil (miss)."
+  [ctx uri]
+  (let [t0 (mova.metrics/now-ns)
+        file (:file ctx)
+        rec (try (when (.exists ^java.io.File file) (decode (slurp file)))
+                 (catch Throwable e (logger/warn logger-tag "bad record" (str e)) nil))]
+    (when (and (not rec) (.exists ^java.io.File file))
+      (io/delete-file file true)) ; corrupt or stale-schema record: drop it, the miss path rewrites it
+    (when rec
+      (let [analysis (update-elements {uri (:analysis rec)} (fn [u el] (assoc el :uri u)))
+            findings (mapv #(assoc % :uri uri) (:findings rec))
+            t1 (mova.metrics/now-ns)]
+        (restore-cache-files! ctx (:cache rec))
+        (span! t0 {:hit true :load_ns (- t1 t0) :write_ns 0 :key_ns (:key_ns ctx) :bytes (.length ^java.io.File file)})
+        (cond-> {:external? (:external? rec)
+                 :analysis analysis
+                 :findings {uri findings}}
+          (:config rec) (assoc :config (:config rec)))))))
+
+(defn- collect-cache [ctx analysis-buckets since-ms]
+  (when-let [dir (:cache-dir ctx)]
+    (vec (for [ns-name (distinct (map #(str (:name %)) (:namespace-definitions analysis-buckets)))
+               lang ["clj" "cljs" "cljc"]
+               :let [f (io/file dir lang (str ns-name ".transit.json"))]
+               :when (and (.exists f) (>= (.lastModified f) since-ms))]
+           {:lang lang :ns ns-name :content (slurp f)}))))
+
+(defn store-result!
+  "Write the record for a miss (temp file + link(2): first writer wins; rename if link is unavailable)."
+  [ctx uri result since-ms]
+  (try
+    (let [t0 (mova.metrics/now-ns)
+          analysis (:analysis result)]
+      (when (and (= #{uri} (set (keys analysis))))
+        (let [buckets (get analysis uri)
+              rec {:analysis (get (update-elements {uri buckets} (fn [_ el] (dissoc el :uri))) uri)
+                   :findings (mapv #(dissoc % :uri) (get-in result [:findings uri]))
+                   :config (:config result)
+                   :external? (:external? result)
+                   :cache (collect-cache ctx buckets since-ms)}
+              ^java.io.File file (:file ctx)
+              tmp (io/file (str file ".tmp" (System/nanoTime)))
+              text (encode rec)]
+          (io/make-parents file)
+          (spit tmp text)
+          (if (.exists file)
+            (io/delete-file tmp true)
+            (let [ln (sh "ln" (str tmp) (str file))]
+              (when-not (zero? (:exit ln))
+                (when-not (.exists file) (move-file (str tmp) (str file))))
+              (io/delete-file tmp true)))
+          (spit (io/file (.getParentFile (.getParentFile file)) "opened.idx") (str (:key ctx) "\t" uri "\n") :append true)
+          (span! t0 {:hit false :load_ns 0 :key_ns (:key_ns ctx) :write_ns (- (mova.metrics/now-ns) t0) :bytes (count text)}))))
+    (catch Throwable e
+      (logger/warn logger-tag "record write failed" (str e)))))

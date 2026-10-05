@@ -1,0 +1,15 @@
+{
+ "files": [
+  "src/app/core.cljs",
+  "src/app/shapes.cljs",
+  "src/app/common.cljc"
+ ],
+ "completion_prefixes": 20,
+ "late_ok": [
+  "jar",
+  "project-other"
+ ],
+ "dep_scenarios": [
+  "open"
+ ]
+}

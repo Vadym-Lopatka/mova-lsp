@@ -1,0 +1,65 @@
+;; Owner of open documents: uri -> {:version :text}. Emits {:uri :version :text} (or {:uri :closed}) on :changed.
+(ns nx.docs)
+
+(defn- apply-change [text {:keys [range text] :as ch}]
+  (if range
+    (let [{:keys [start end]} range]
+      (mova.nx/apply-edit (or (:__text ch) "") (:line start) (:character start) (:line end) (:character end) text))
+    text))
+
+(defn apply-changes
+  "LSP contentChanges applied in order to `text`; a change without :range replaces all (full sync)."
+  [text changes]
+  (reduce (fn [t {:keys [range] :as ch}]
+            (if range
+              (let [{:keys [start end]} range]
+                (mova.nx/apply-edit t (:line start) (:character start) (:line end) (:character end) (:text ch)))
+              (:text ch)))
+          text changes))
+
+(defn handle
+  "[docs' changed-events] for one notification."
+  [docs {:keys [method params]}]
+  (let [td (:textDocument params)
+        uri (:uri td)]
+    (case method
+      "textDocument/didOpen"
+      [(assoc docs uri {:version (:version td) :text (:text td)})
+       [{:uri uri :version (:version td) :text (:text td)}]]
+
+      "textDocument/didChange"
+      (if-let [d (get docs uri)]
+        (let [v (:version td)]
+          (if (and v (:version d) (< v (:version d)))
+            [docs []]                               ; stale
+            (let [text (apply-changes (:text d) (:contentChanges params))]
+              [(assoc docs uri {:version v :text text})
+               [{:uri uri :version v :text text}]])))
+        [docs []])
+
+      "textDocument/didClose"
+      [(dissoc docs uri) [{:uri uri :closed true}]]
+
+      "textDocument/didSave"
+      (if-let [d (get docs uri)]
+        [(if-let [t (:text params)] (assoc docs uri (assoc d :text t)) docs) []]
+        [docs []])
+
+      [docs []])))
+
+;; workspace/didChangeWatchedFiles -> [changed-uris deleted-uris] of files NOT open in the editor (LSP FileChangeType 1 created, 2 changed, 3 deleted).
+(defn watched-split [docs {:keys [params]}]
+  (let [chs (remove #(contains? docs (:uri %)) (:changes params))
+        uris (fn [pred] (vec (distinct (map :uri (filter #(pred (:type %)) chs)))))]
+    [(uris #{1 2}) (uris #{3})]))
+
+(defn docs-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {} :watched {}} :outs {:changed {} :watch {}}})
+    :init (fn [_] {:docs {}})
+    :transform (fn [s in-id msg]
+                 (if (= in-id :watched)
+                   (let [[chg del] (watched-split (:docs s) msg)]
+                     [s (if (or (seq chg) (seq del)) {:watch [{:changed chg :deleted del}]} {})])
+                   (let [[docs evs] (handle (:docs s) msg)]
+                     [(assoc s :docs docs) (if (seq evs) {:changed evs} {})])))}))

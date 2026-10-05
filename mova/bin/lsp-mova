@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run a file or expression on Mova with clojure-lsp's module path.
+#   mova/bin/lsp-mova file.clj        mova/bin/lsp-mova -e '(+ 1 2)'
+set -euo pipefail
+MOVA_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MOVA_BIN="${MOVA_BIN:-mova}"
+export MOVA_REFLECTION_WARNINGS="${MOVA_REFLECTION_WARNINGS:-0}"
+exec "$MOVA_BIN" --module-path "$(cat "$MOVA_DIR/module-path.txt")" "$@"

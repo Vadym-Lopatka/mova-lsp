@@ -1,0 +1,48 @@
+;; mova --module-path nx/src nx/test/pipe_test.mova   (exit 1 on failure). Graph handlers with the real native engine.
+(require 'nx.sched 'nx.store 'nx.diags 'nx.bg)
+(defn chk [nm a b] (when (not= a b) (println "FAIL" nm (pr-str a) (pr-str b)) (System/exit 1)))
+(def eng (mova.nx/engine 2))
+(def u "file:///t/a.clj")
+(defn settle
+  "sched event -> native pool -> await -> store; returns the store's outs."
+  []
+  (nx.store/handle eng (mova.nx/await eng)))
+(def bad-shape
+  {:range {:start {:line 1 :character 0} :end {:line 1 :character 0}} :tags [] :message "Unmatched bracket: unexpected )"
+   :code "syntax" :severity 1 :source "clj-kondo"})
+;; open with a syntax error -> one diagnostic, exact JVM shape
+(let [s0 {:eng eng :latest {}}
+      [s1 open1] (nx.sched/handle s0 {:uri u :version 1 :text "(ns a)\n)\n"})
+      d0 {:open {} :pub {}}
+      [d1 _] (nx.diags/on-open d0 (first open1))
+      outs (settle)
+      [d2 msgs] (nx.diags/on-committed d1 (first (:committed outs)))]
+  (chk "open-diag" msgs [(nx.diags/publish u [bad-shape])])
+  ;; change fixes -> empty diagnostics
+  (let [[s2 open2] (nx.sched/handle s1 {:uri u :version 2 :text "(ns a)\n(def x 1)\n"})
+        [d3 _] (nx.diags/on-open d2 (first open2))
+        [d4 msgs2] (nx.diags/on-committed d3 (first (:committed (settle))))]
+    (chk "fixed" (mapv #(-> % :params :diagnostics count) msgs2) [1]) ; unused public var x (clojure-lsp/unused-public-var)
+    ;; identical result again -> deduped
+    (let [[s3 open3] (nx.sched/handle s2 {:uri u :version 3 :text "(ns a)\n(def x 1)\n"})
+          [d5 _] (nx.diags/on-open d4 (first open3))
+          [_ msgs3] (nx.diags/on-committed d5 (first (:committed (settle))))]
+      (chk "dedupe" msgs3 [])
+      ;; stale event at sched: dropped, nothing queued
+      (chk "stale-sched" (second (nx.sched/handle s3 {:uri u :version 1 :text ")"})) [])
+      ;; stale result at diags: commit for v2 while v3 is open -> dropped
+      (chk "stale-diags" (second (nx.diags/on-committed d5 {:snap (mova.nx/snapshot eng) :changed [{:uri u :version 2}]})) [])))
+  ;; stale result at the store: v1 after v2 is dropped natively
+  (mova.nx/analyze-text eng u 1 "(")
+  (chk "stale-store" (settle) {}))
+;; progress math: JVM lerp(20, 98, done/total)
+(chk "pct" [(nx.bg/pct-of 0 4) (nx.bg/pct-of 2 4) (nx.bg/pct-of 4 4)] [20 59 98])
+(let [s {:batch 7 :token "t" :last-pct 20}
+      [s1 m1] (nx.bg/on-progress s {:batch 7 :done 2 :total 4})
+      [s2 m2] (nx.bg/on-progress s1 {:batch 7 :done 2 :total 4})
+      [_ m3] (nx.bg/on-progress s2 {:batch 7 :done 4 :total 4})]
+  (chk "report" (-> m1 first :params :value) {:kind "report" :message "Analyzing project files" :percentage 59})
+  (chk "dedupe-pct" m2 [])
+  (chk "end" (mapv #(-> % :params :value :percentage) m3) [98 99 nil nil nil])
+  (chk "end-kind" (-> m3 last :params :value) {:kind "end" :message "Done"}))
+(println "ok")

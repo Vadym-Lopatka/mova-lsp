@@ -1,0 +1,12 @@
+{:config-paths ["rewrite-clj/rewrite-clj"
+                "babashka/fs"]
+ :linters {:unresolved-var {:exclude [digest
+                                      rewrite-clj.zip
+                                      rewrite-clj.node
+                                      rewrite-clj.paredit]}
+           :unsorted-required-namespaces {:level :warning}}
+ :lint-as {rewrite-clj.zip.subedit/edit->    clojure.core/->
+           rewrite-clj.zip.subedit/subedit-> clojure.core/->
+           clojure-lsp.refactor.edit/my-defn clojure.core/defn
+           clojure-lsp.test-helper/let-mock-chans clojure.core/let
+           clojure.test.check.clojure-test/defspec clojure.test/deftest}}

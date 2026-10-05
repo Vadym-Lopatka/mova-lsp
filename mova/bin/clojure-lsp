@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Runs clojure-lsp.main's -main on Mova with the given CLI args.
+#   mova/bin/clojure-lsp --version
+#   mova/bin/clojure-lsp format --dry --project-root <dir>
+set -euo pipefail
+MOVA_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MOVA_BIN="${MOVA_BIN:-mova}"
+export MOVA_REFLECTION_WARNINGS=0
+# Heap image: first run writes it, later runs restore it (~20ms instead of ~170ms
+# namespace load). Mova keys it on binary, module path and all sources, so any
+# change falls back to a normal load and rewrites it. MOVA_IMAGE= (empty) disables.
+if [[ -z "${MOVA_IMAGE+x}" ]]; then
+  export MOVA_IMAGE="${XDG_CACHE_HOME:-$HOME/.cache}/mova-clojure-lsp/lsp.img"
+  mkdir -p "$(dirname "$MOVA_IMAGE")"
+fi
+[[ -n "$MOVA_IMAGE" ]] && export MOVA_IMAGE_PRELOAD="${MOVA_IMAGE_PRELOAD:-clojure-lsp.main}"
+# Training run before the image is written: hot fns come back already compiled.
+[[ -n "$MOVA_IMAGE" && -z "${MOVA_IMAGE_TRAIN+x}" ]] && export MOVA_IMAGE_TRAIN="$MOVA_DIR/bin/clojure-lsp-train.mova"
+# Go-block/future runtime shards default to available_parallelism() (e.g. 14
+# on this box), each an always-on OS thread from process start. An editor's
+# LSP session doesn't need that much go-block concurrency; measured ~1.5-2MB
+# RSS at initialize saved with 4 shards vs 14, no time regression (RSSPROBE,
+# lsp_client_probe.py x3 warm). Still overridable by the caller/env.
+export MOVA_SHARDS="${MOVA_SHARDS:-4}"
+# Native code for hot fns: compiled at image build (training run), restored from the image (S3).
+export MOVA_JIT="${MOVA_JIT:-1}"
+exec "$MOVA_BIN" --module-path "$(cat "$MOVA_DIR/module-path.txt")" "$MOVA_DIR/bin/clojure-lsp-entry.mova" "$@"

@@ -1,0 +1,770 @@
+=== format --dry exit: 1
+=== format exit: 0
+## src/sample_test/api/clean_ns/a.clj
+(ns sample-test.api.clean-ns.a
+  (:require
+   [clojure.string :as string]
+   [sample-test.api.clean-ns.b :refer [b c a]]))
+
+a
+b
+c
+
+(ns sample-test.api.clean-ns.a.other)
+## src/sample_test/api/clean_ns/b.clj
+(ns sample-test.api.clean-ns.b)
+
+(def a nil)
+(def b nil)
+(def c nil)
+## src/sample_test/api/clean_ns/dos.clj
+(ns sample-test.api.clean-ns.dos
+  (:require
+   [clojure.string :as string]))
+
+(string/capitalize "x")
+## src/sample_test/api/clean_ns/unix.clj
+(ns sample-test.api.clean-ns.unix
+  (:require
+   [clojure.string :as string]))
+
+(string/capitalize "x")
+## src/sample_test/api/diagnostics/a.clj
+(ns sample-test.api.diagnostics.a)
+
+some-unknown-var
+## src/sample_test/api/diagnostics/b.clj
+(ns sample-test.api.diagnostics.b)
+
+(defn no-diags []
+  1)
+
+(no-diags)
+## src/sample_test/api/diagnostics/d.clj
+(ns sample-test.api.diagnostics.d)
+
+(defn unused-public-var [a b]
+  (+ a b))
+## src/sample_test/api/format/a.clj
+(ns sample-test.api.format.a
+  (:require
+   [sample-test.api.format.b :refer [b  c a]]))
+
+a       b
+c
+
+(defn ^:private  foo
+  [a
+   b]
+  (+ 2 4))
+
+(ns sample-test.api.format.a.other)
+## src/sample_test/api/format/b.clj
+(ns sample-test.api.format.b)
+
+(def a nil)
+(def b nil)
+(def c nil)
+
+(defn ^:private  baz [a b]
+  (+ 2 4))
+## src/sample_test/code_action/a.clj
+(ns sample-test.code-action.a)
+
+(def m
+  {:a 1
+   ;; b comment
+   :b 2 ;; 2 comment
+   :c 3
+   :d 4})
+## src/sample_test/completion/a.clj
+(ns sample-test.completion.a)
+
+(def some-var 1)
+
+;; comment
+## src/sample_test/completion/b.clj
+(ns sample-test.declaration.b
+  (:require [sample-test.declaration.b :as declaration-b]
+            [clojure.string :refer :all]))
+
+(declaration-b/some-var)
+
+(split "" [])
+## src/sample_test/cursor_info/a.clj
+(ns sample-test.src.sample-test.cursor-info.a)
+
+(defn some-public-func [a]
+  a)
+
+## src/sample_test/declaration/a.clj
+(ns sample-test.declaration.a)
+
+(def some-var 1)
+## src/sample_test/declaration/b.clj
+(ns sample-test.declaration.b
+  (:require [sample-test.declaration.b :as declaration-b]
+            [clojure.string :refer :all]))
+
+(declaration-b/some-var)
+
+(split "" [])
+## src/sample_test/definition/a.clj
+(ns sample-test.definition.a
+  (:require [clojure.spec.alpha :as s]))
+
+(def some-var 1)
+
+(defn some-public-func [a]
+  a)
+
+(defn ^:private some-private-func []
+  (+ 1 some-var))
+
+(some-private-func)
+
+(s/def ::my-key 1)
+
+(cond-> [])
+## src/sample_test/definition/b.clj
+(ns sample-test.definition.b
+  (:require [sample-test.definition.a :as a]))
+
+(a/some-public-func 2)
+
+:definition-b-key
+
+::my-key
+
+:sample-test.definition.a/my-key
+
+::a/my-key
+## src/sample_test/definition/c.clj
+(ns sample-test.definition.c)
+
+(sample-test.definition.a/some-public-func 3)
+## src/sample_test/diagnostics/custom_linters.clj
+(ns sample-test.diagnostics.custom-linters)
+
+(def ^:private my-var (+ 1 2))
+
+my-var
+## src/sample_test/diagnostics/depend/a.clj
+(ns sample-test.diagnostics.depend.a)
+
+(def foo 1)
+## src/sample_test/diagnostics/depend/b.clj
+(ns sample-test.diagnostics.depend.b
+  (:require [sample-test.diagnostics.depend.a :as depend.a]))
+
+depend.a/foo
+## src/sample_test/diagnostics/different_aliases.clj
+(ns sample-test.diagnostics.different-aliases
+  {:clj-kondo/config '{:linters {:duplicate-require {:level :off}}}}
+  (:require [clojure.string]
+            [clojure.string :as s]
+            [clojure.string :as str]
+            [clojure.string :as string]
+            [clojure.string :as cstring]))
+## src/sample_test/diagnostics/kondo.clj
+(ns sample-test.diagnostics.kondo)
+
+(defn ^:private foo []
+  (+ 1 2))
+
+bar
+
+bar
+## src/sample_test/diagnostics/unused_public_var.clj
+(ns sample-test.diagnostics.unused-public-var)
+
+(defn foo []
+  (+ 1 2))
+
+(def bar (+ 1 2))
+## src/sample_test/document_highlight/a.clj
+(ns sample-test.document-highlight.a
+  (:require
+   [clojure.string :as str]))
+
+(defn my-func [a b]
+  (+ a b))
+
+(my-func 1 2)
+
+(my-func 3 4)
+
+(str/join "," "")
+
+(let [my-func #(+ 1 %)]
+  (my-func 2))
+## src/sample_test/document_symbol/a.clj
+(ns sample-test.document-symbol.a
+  (:require [clojure.spec.alpha :as s]))
+
+(def a-some-var 1)
+
+(defn a-some-public-function [a b]
+  (+ a b))
+
+(s/def ::a-my-key 2)
+
+(let [a 1 b 2]
+  (a-some-public-function a b))
+## src/sample_test/document_symbol/b.clj
+(ns sample-test.document-symbol.b)
+
+(def b-some-var 1)
+## src/sample_test/formatting.clj
+(ns sample-test.formatting)
+
+(def foo 123)
+
+(defn bar []
+  (+
+   1 foo))
+
+(bar)
+## src/sample_test/implementation/a.clj
+(ns sample-test.implementation.a)
+
+(defprotocol Foo
+  (something [_this]))
+## src/sample_test/implementation/b.clj
+(ns sample-test.implementation.b
+  (:require [sample-test.implementation.a :as a]))
+
+(defrecord FooImpl1 []
+  a/Foo
+  (something [_this]
+    123))
+
+(defrecord FooImpl2 []
+  a/Foo
+  (^void something [_this]
+    123
+    456))
+
+(a/something (->FooImpl1))
+
+(a/something (->FooImpl2))
+## src/sample_test/java_interop/SampleClass.java
+package sample_test.java_interop;
+
+class SampleClass {
+
+    private final String foo = "Foo";
+
+}
+## src/sample_test/java_interop/a.clj
+(ns sample-test.java-interop.a
+  (:import
+   (clojure.lang PersistentVector)
+   (sample_test.java_interop SampleClass)
+   (difflib DiffUtils)))
+
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
+(defn my-function []
+  (SampleClass.)
+  (PersistentVector.)
+  (type DiffUtils))
+## src/sample_test/linked_editing_range/a.cljc
+(ns sample-test.linked-editing-range.a)
+
+(def bar 1)
+
+(defn foo [x] x)
+## src/sample_test/linked_editing_range/b.cljc
+(ns sample-test.linked-editing-range.b
+  (:require [sample-test.linked-editing-range.a :as aaa]))
+
+(aaa/foo aaa/bar)
+## src/sample_test/rename/a.cljc
+(ns sample-test.rename.a
+  (:require [clojure.spec.alpha :as s]))
+
+(defn my-func [a b]
+  (+ a b))
+
+(my-func 1 2)
+
+(my-func 3 4)
+
+(s/def :my-key 1)
+
+(let [{:keys [:my-key]} {:my-key 1}]
+  (+ 1 my-key))
+
+::click
+
+:sample-test.rename.a/click
+## src/sample_test/rename/b.cljc
+(ns sample-test.rename.b
+  (:require [sample-test.rename.a :as a :refer [my-func]]))
+
+(a/my-func 5 6)
+
+(my-func 7 8)
+
+::a/click
+
+:sample-test.rename.a/click
+
+(def my-def 1)
+## src/sample_test/rename/d.clj
+(ns sample-test.rename.d
+  (:require [sample-test.rename.b :as b :refer [my-def]]))
+
+b/my-def
+## src/sample_test/rename/same_line.clj
+(ns sample-test.rename.same-line)
+
+(defn non-blank [x] x)
+
+(defn f [a b] (or (non-blank a) (non-blank b)))
+## src/sample_test/rename/single_a.clj
+(ns sample-test.rename.single-a)
+
+::click
+
+:sample-test.rename.single-a/click
+## src/sample_test/rename/single_b.clj
+(ns sample-test.rename.single-b
+  (:require [sample-test.rename.single-a :as a]))
+
+::a/click
+
+:sample-test.rename.single-a/click
+## src/sample_test/stubs/a.clj
+(ns sample-test.stubs.a
+  (:require [datomic.api :as d]))
+
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
+(defn datomic-test []
+  (d/create-database))
+## src/sample_test/text_change/a.clj
+(ns sample-test.text-change.a)
+
+(defn foo "original" [] 1)
+
+(foo)
+## src/sample_test/watched_files_change/a.clj
+(ns sample-test.watched-files-change.a)
+
+(defn foo [] 1)
+
+(foo)
+## src/sample_test/watched_files_change/b.clj
+(ns sample-test.watched-files-change.b
+  (:require [sample-test.watched-files-change.a :as a]))
+
+(a/foo)
+
+(def a 1)
+=== clean-ns --dry exit: 1
+=== clean-ns exit: 0
+## src/sample_test/api/clean_ns/a.clj
+(ns sample-test.api.clean-ns.a
+  (:require
+   [sample-test.api.clean-ns.b :refer [a b c]]))
+
+a
+b
+c
+
+(ns sample-test.api.clean-ns.a.other)
+## src/sample_test/api/clean_ns/b.clj
+(ns sample-test.api.clean-ns.b)
+
+(def a nil)
+(def b nil)
+(def c nil)
+## src/sample_test/api/clean_ns/dos.clj
+(ns sample-test.api.clean-ns.dos
+  (:require
+   [clojure.string :as string]))
+
+(string/capitalize "x")
+## src/sample_test/api/clean_ns/unix.clj
+(ns sample-test.api.clean-ns.unix
+  (:require
+   [clojure.string :as string]))
+
+(string/capitalize "x")
+## src/sample_test/api/diagnostics/a.clj
+(ns sample-test.api.diagnostics.a)
+
+some-unknown-var
+## src/sample_test/api/diagnostics/b.clj
+(ns sample-test.api.diagnostics.b)
+
+(defn no-diags []
+  1)
+
+(no-diags)
+## src/sample_test/api/diagnostics/d.clj
+(ns sample-test.api.diagnostics.d)
+
+(defn unused-public-var [a b]
+  (+ a b))
+## src/sample_test/api/format/a.clj
+( ns sample-test.api.format.a
+  (:require
+   [sample-test.api.format.b :refer [a b c]]))
+
+a       b
+  c
+
+  (defn ^:private  foo
+[a
+    b]
+     (+ 2 4))
+
+
+(ns sample-test.api.format.a.other)
+## src/sample_test/api/format/b.clj
+(ns sample-test.api.format.b)
+
+(def a nil)
+(def b nil)
+(def c nil)
+
+(defn ^:private  baz [a b]
+  (+ 2 4))
+## src/sample_test/code_action/a.clj
+(ns sample-test.code-action.a)
+
+(def m
+  {:a 1
+   ;; b comment
+   :b 2 ;; 2 comment
+   :c 3
+   :d 4})
+## src/sample_test/completion/a.clj
+(ns sample-test.completion.a)
+
+(def some-var 1)
+
+;; comment
+## src/sample_test/completion/b.clj
+(ns sample-test.declaration.b
+  (:require [clojure.string :refer :all]
+            [sample-test.declaration.b :as declaration-b]))
+
+(declaration-b/some-var)
+
+(split "" [])
+## src/sample_test/cursor_info/a.clj
+(ns sample-test.src.sample-test.cursor-info.a)
+
+(defn some-public-func [a]
+  a)
+
+## src/sample_test/declaration/a.clj
+(ns sample-test.declaration.a)
+
+(def some-var 1)
+## src/sample_test/declaration/b.clj
+(ns sample-test.declaration.b
+  (:require [clojure.string :refer :all]
+            [sample-test.declaration.b :as declaration-b]))
+
+(declaration-b/some-var)
+
+(split "" [])
+## src/sample_test/definition/a.clj
+(ns sample-test.definition.a
+  (:require [clojure.spec.alpha :as s]))
+
+(def some-var 1)
+
+(defn some-public-func [a]
+  a)
+
+(defn ^:private some-private-func []
+  (+ 1 some-var))
+
+(some-private-func)
+
+(s/def ::my-key 1)
+
+(cond-> [])
+## src/sample_test/definition/b.clj
+(ns sample-test.definition.b
+  (:require [sample-test.definition.a :as a]))
+
+(a/some-public-func 2)
+
+:definition-b-key
+
+::my-key
+
+:sample-test.definition.a/my-key
+
+::a/my-key
+## src/sample_test/definition/c.clj
+(ns sample-test.definition.c)
+
+(sample-test.definition.a/some-public-func 3)
+## src/sample_test/diagnostics/custom_linters.clj
+(ns sample-test.diagnostics.custom-linters)
+
+(def ^:private my-var (+ 1 2))
+
+my-var
+## src/sample_test/diagnostics/depend/a.clj
+(ns sample-test.diagnostics.depend.a)
+
+(def foo 1)
+## src/sample_test/diagnostics/depend/b.clj
+(ns sample-test.diagnostics.depend.b
+  (:require [sample-test.diagnostics.depend.a :as depend.a]))
+
+depend.a/foo
+## src/sample_test/diagnostics/different_aliases.clj
+(ns sample-test.diagnostics.different-aliases
+    {:clj-kondo/config '{:linters {:duplicate-require {:level :off}}}}
+    (:require [clojure.string]
+              [clojure.string :as s]
+              [clojure.string :as str]
+              [clojure.string :as string]
+              [clojure.string :as cstring]))
+## src/sample_test/diagnostics/kondo.clj
+(ns sample-test.diagnostics.kondo)
+
+(defn ^:private foo []
+  (+ 1 2))
+
+bar
+
+bar
+## src/sample_test/diagnostics/unused_public_var.clj
+(ns sample-test.diagnostics.unused-public-var)
+
+(defn foo []
+  (+ 1 2))
+
+(def bar (+ 1 2))
+## src/sample_test/document_highlight/a.clj
+(ns sample-test.document-highlight.a
+  (:require
+    [clojure.string :as str]))
+
+(defn my-func [a b]
+  (+ a b))
+
+(my-func 1 2)
+
+(my-func 3 4)
+
+(str/join "," "")
+
+(let [my-func #(+ 1 %)]
+  (my-func 2))
+## src/sample_test/document_symbol/a.clj
+(ns sample-test.document-symbol.a
+  (:require [clojure.spec.alpha :as s]))
+
+(def a-some-var 1)
+
+(defn a-some-public-function [a b]
+  (+ a b))
+
+(s/def ::a-my-key 2)
+
+(let [a 1 b 2]
+  (a-some-public-function a b))
+## src/sample_test/document_symbol/b.clj
+(ns sample-test.document-symbol.b)
+
+(def b-some-var 1)
+## src/sample_test/formatting.clj
+(  ns sample-test.formatting)
+
+(def foo 123)
+
+(defn bar [
+           ]
+    ( +
+     1 foo))
+
+  (bar)
+## src/sample_test/implementation/a.clj
+(ns sample-test.implementation.a)
+
+(defprotocol Foo
+  (something [_this]))
+## src/sample_test/implementation/b.clj
+(ns sample-test.implementation.b
+  (:require [sample-test.implementation.a :as a]))
+
+(defrecord FooImpl1 []
+  a/Foo
+  (something [_this]
+    123))
+
+(defrecord FooImpl2 []
+  a/Foo
+  (^void something [_this]
+    123
+    456))
+
+(a/something (->FooImpl1))
+
+(a/something (->FooImpl2))
+## src/sample_test/java_interop/SampleClass.java
+package sample_test.java_interop;
+
+class SampleClass {
+
+    private final String foo = "Foo";
+
+}
+## src/sample_test/java_interop/a.clj
+(ns sample-test.java-interop.a
+  (:import
+   (clojure.lang PersistentVector)
+   (difflib DiffUtils)
+   (sample_test.java_interop SampleClass)))
+
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
+(defn my-function []
+  (SampleClass.)
+  (PersistentVector.)
+  (type DiffUtils))
+## src/sample_test/linked_editing_range/a.cljc
+(ns sample-test.linked-editing-range.a)
+
+(def bar 1)
+
+(defn foo [x] x)
+## src/sample_test/linked_editing_range/b.cljc
+(ns sample-test.linked-editing-range.b
+  (:require [sample-test.linked-editing-range.a :as aaa]))
+
+(aaa/foo aaa/bar)
+## src/sample_test/rename/a.cljc
+(ns sample-test.rename.a
+  (:require [clojure.spec.alpha :as s]))
+
+(defn my-func [a b]
+  (+ a b))
+
+(my-func 1 2)
+
+(my-func 3 4)
+
+(s/def :my-key 1)
+
+(let [{:keys [:my-key]} {:my-key 1}]
+  (+ 1 my-key))
+
+::click
+
+:sample-test.rename.a/click
+## src/sample_test/rename/b.cljc
+(ns sample-test.rename.b
+  (:require [sample-test.rename.a :as a :refer [my-func]]))
+
+(a/my-func 5 6)
+
+(my-func 7 8)
+
+::a/click
+
+:sample-test.rename.a/click
+
+(def my-def 1)
+## src/sample_test/rename/d.clj
+(ns sample-test.rename.d
+  (:require [sample-test.rename.b :as b :refer [my-def]]))
+
+b/my-def
+## src/sample_test/rename/same_line.clj
+(ns sample-test.rename.same-line)
+
+(defn non-blank [x] x)
+
+(defn f [a b] (or (non-blank a) (non-blank b)))
+## src/sample_test/rename/single_a.clj
+(ns sample-test.rename.single-a)
+
+::click
+
+:sample-test.rename.single-a/click
+## src/sample_test/rename/single_b.clj
+(ns sample-test.rename.single-b
+  (:require [sample-test.rename.single-a :as a]))
+
+::a/click
+
+:sample-test.rename.single-a/click
+## src/sample_test/stubs/a.clj
+(ns sample-test.stubs.a
+  (:require [datomic.api :as d]))
+
+#_{:clojure-lsp/ignore [:clojure-lsp/unused-public-var]}
+(defn datomic-test []
+  (d/create-database))
+## src/sample_test/text_change/a.clj
+(ns sample-test.text-change.a)
+
+(defn foo "original" [] 1)
+
+(foo)
+## src/sample_test/watched_files_change/a.clj
+(ns sample-test.watched-files-change.a)
+
+(defn foo [] 1)
+
+(foo)
+## src/sample_test/watched_files_change/b.clj
+(ns sample-test.watched-files-change.b
+  (:require [sample-test.watched-files-change.a :as a]))
+
+(a/foo)
+
+(def a 1)
+=== diagnostics exit: 3
+[  0%] clojure-lsp                 [  5%] Finding kondo config        [ 10%] Finding cache               [ 15%] Discovering classpath       [ 20%] Copying kondo configs       [ 25%] Analyzing external classpath[ 45%] Resolving config paths      [ 50%] Analyzing project files     [ 99%] Project analyzed            Finding diagnostics...
+src/sample_test/api/clean_ns/a.clj:10:5: error: [namespace-name-mismatch] Namespace name does not match file name: sample-test.api.clean-ns.a.other
+src/sample_test/api/clean_ns/a.clj:3:24: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/api/clean_ns/a.clj:3:5: warning: [unused-namespace] namespace clojure.string is required but never used
+src/sample_test/api/clean_ns/dos.clj:3:24: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/api/clean_ns/unix.clj:3:24: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/api/diagnostics/a.clj:3:1: error: [unresolved-symbol] Unresolved symbol: some-unknown-var
+src/sample_test/api/diagnostics/d.clj:3:7: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.api.diagnostics.d/unused-public-var'
+src/sample_test/api/format/a.clj:10:5: warning: [unused-binding] unused binding b
+src/sample_test/api/format/a.clj:14:5: error: [namespace-name-mismatch] Namespace name does not match file name: sample-test.api.format.a.other
+src/sample_test/api/format/a.clj:8:20: warning: [unused-private-var] Unused private var sample-test.api.format.a/foo
+src/sample_test/api/format/a.clj:9:2: warning: [unused-binding] unused binding a
+src/sample_test/api/format/b.clj:7:18: warning: [unused-private-var] Unused private var sample-test.api.format.b/baz
+src/sample_test/api/format/b.clj:7:23: warning: [unused-binding] unused binding a
+src/sample_test/api/format/b.clj:7:25: warning: [unused-binding] unused binding b
+src/sample_test/code_action/a.clj:3:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.code-action.a/m'
+src/sample_test/completion/a.clj:3:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.completion.a/some-var'
+src/sample_test/completion/b.clj:1:5: error: [namespace-name-mismatch] Namespace name does not match file name: sample-test.declaration.b
+src/sample_test/completion/b.clj:2:13: warning: [self-requiring-namespace] Namespace is requiring itself: sample-test.declaration.b
+src/sample_test/cursor_info/a.clj:1:5: error: [namespace-name-mismatch] Namespace name does not match file name: sample-test.src.sample-test.cursor-info.a
+src/sample_test/cursor_info/a.clj:3:7: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.src.sample-test.cursor-info.a/some-public-func'
+src/sample_test/declaration/a.clj:3:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.declaration.a/some-var'
+src/sample_test/declaration/b.clj:2:13: warning: [self-requiring-namespace] Namespace is requiring itself: sample-test.declaration.b
+src/sample_test/definition/c.clj:3:2: warning: [unresolved-namespace] Unresolved namespace sample-test.definition.a. Are you missing a require?
+src/sample_test/diagnostics/different_aliases.clj:4:35: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/diagnostics/different_aliases.clj:5:35: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/diagnostics/different_aliases.clj:6:35: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/diagnostics/different_aliases.clj:7:35: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/diagnostics/kondo.clj:3:17: warning: [unused-private-var] Unused private var sample-test.diagnostics.kondo/foo
+src/sample_test/diagnostics/kondo.clj:6:1: error: [unresolved-symbol] Unresolved symbol: bar
+src/sample_test/diagnostics/kondo.clj:8:1: error: [unresolved-symbol] Unresolved symbol: bar
+src/sample_test/diagnostics/unused_public_var.clj:3:7: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.diagnostics.unused-public-var/foo'
+src/sample_test/diagnostics/unused_public_var.clj:6:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.diagnostics.unused-public-var/bar'
+src/sample_test/document_highlight/a.clj:3:25: error: [clojure-lsp/different-aliases] Different aliases #{cstring s str string} found for clojure.string
+src/sample_test/document_symbol/a.clj:4:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.document-symbol.a/a-some-var'
+src/sample_test/document_symbol/a.clj:9:8: info: [clojure-lsp/unused-public-var] Unused public keyword ':sample-test.document-symbol.a/a-my-key'
+src/sample_test/document_symbol/b.clj:3:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.document-symbol.b/b-some-var'
+src/sample_test/rename/b.cljc:4:1: info: [aliased-referred-var] Var my-func is referred but used via alias: a
+src/sample_test/rename/d.clj:2:49: warning: [unused-referred-var] #'sample-test.rename.b/my-def is referred but never used
+src/sample_test/rename/d.clj:4:1: info: [aliased-referred-var] Var my-def is referred but used via alias: b
+src/sample_test/rename/same_line.clj:5:7: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.rename.same-line/f'
+src/sample_test/watched_files_change/b.clj:6:6: info: [clojure-lsp/unused-public-var] Unused public var 'sample-test.watched-files-change.b/a'

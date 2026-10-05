@@ -1,0 +1,2 @@
+(require 'nx.stats)
+(apply nx.stats/-main *command-line-args*)

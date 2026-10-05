@@ -1,0 +1,7 @@
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"hoverProvider": true, "textDocumentSync": 1}, "serverInfo": {"name": "mova-smoke", "version": "0.1.0"}}}
+{"id": 2, "jsonrpc": "2.0", "result": {"text": "héllo ✓", "x": 1}}
+{"error": {"code": -32603, "data": {"id": 3, "method": "will-throw"}, "message": "Internal error"}, "id": 3, "jsonrpc": "2.0"}
+{"id": 1, "jsonrpc": "2.0", "method": "server/ping", "params": {"tag": "smoke"}}
+{"jsonrpc": "2.0", "method": "server/notified", "params": {"from": "server", "pingReply": {"pong": true}}}
+{"id": 4, "jsonrpc": "2.0", "result": null}
+EXIT CODE: 0

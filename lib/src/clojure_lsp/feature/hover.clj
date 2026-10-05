@@ -1,0 +1,287 @@
+(ns clojure-lsp.feature.hover
+  (:require
+   [clojure-lsp.feature.clojuredocs :as f.clojuredocs]
+   [clojure-lsp.feature.file-management :as f.file-management]
+   [clojure-lsp.feature.special-forms :as f.special-forms]
+   [clojure-lsp.parser :as parser]
+   [clojure-lsp.queries :as q]
+   [clojure-lsp.refactor.edit :as edit]
+   [clojure-lsp.settings :as settings]
+   [clojure-lsp.shared :as shared :refer [fast=]]
+   [clojure.string :as string]
+   [rewrite-clj.zip :as z]))
+
+(set! *warn-on-reflection* true)
+
+(def line-break "\n\n----\n\n")
+(def clojure-opening-code "```clojure\n")
+(def java-opening-code "```java\n")
+(def closing-code "\n```")
+
+(defn ^:private drop-whitespace [n s]
+  (if (> n (count s))
+    s
+    (let [fully-trimmed (string/triml s)
+          dropped (subs s n)]
+      (last (sort-by count [fully-trimmed dropped])))))
+
+(defn ^:private count-whitespace [s]
+  (- (count s) (count (string/triml s))))
+
+(defn ^:private docstring->formatted-markdown [doc]
+  (let [lines (string/split-lines doc)
+        other-lines (filter (comp not string/blank?) (rest lines))
+        multi-line? (> (count other-lines) 0)]
+    (if-not multi-line?
+      doc
+      (let [indentation (apply min (map count-whitespace other-lines))
+            unindented-lines (cons (first lines)
+                                   (map #(drop-whitespace indentation %) (rest lines)))]
+        (string/join "\n" unindented-lines)))))
+
+(defn ^:private clojuredocs->hover-docs
+  [{:keys [doc examples see-alsos notes]}
+   doc-line]
+  (string/join
+    "\n\n"
+    (cond-> []
+      doc-line (conj doc-line)
+      (and (not doc-line)
+           doc) (conj doc)
+      (seq examples) (conj "__Examples:__"
+                           (->> examples
+                                (map #(str clojure-opening-code % closing-code))
+                                (string/join "\n---\n")))
+      (seq see-alsos) (conj "__See also:__"
+                            (->> see-alsos
+                                 (map (fn [see-also]
+                                        (let [name (name see-also)
+                                              ns (namespace see-also)]
+                                          (format "[%s](https://clojuredocs.org/%s/%s)"
+                                                  (str ns "/" name)
+                                                  ns
+                                                  name))))
+                                 (string/join "\n\n")))
+      (seq notes) (conj "__Notes:__"
+                        (->> notes
+                             (map #(str %))
+                             (string/join "\n---\n"))))))
+
+(defn ^:private special-form->hover-docs
+  [{:keys [doc url]} sym-name markdown?]
+  (when doc
+    (string/join
+      "\n\n"
+      ["Special Form"
+       (if markdown?
+         (docstring->formatted-markdown doc)
+         doc)
+       (str "Please see http://clojure.org/"
+            (or url (str "special_forms#" sym-name)))])))
+
+(defn find-docstring
+  "Find the doc string for the hovered symbol.
+
+  If the symbol's docstring is a string literal, we can process it. If it's reaching
+  into the metadata of another var to get that var's docstring (with the idiom
+  `(:doc (meta #'some-var)))`, use `q/find-definition` to retrieve the `:doc` from it
+  and try again.
+
+  Limits recurring with `q/find-definition` to 3 times to avoid potential timeouts."
+  [db markdown? uri doc cnt]
+  (cond
+    (string? doc)
+    (when (seq doc)
+      (if markdown?
+        (docstring->formatted-markdown doc)
+        doc))
+    (< 2 cnt) nil
+    ;; special case for `(:doc (meta #'some-var))`
+    (seq? doc)
+    (let [referenced-var-meta
+          (and (seq? doc)
+               (fast= :doc (first doc))
+               (let [doc' (fnext doc)]
+                 (and (seq? doc')
+                      (fast= 'meta (first doc'))
+                      (let [doc'' (fnext doc')]
+                        (and (fast= 'var (first doc''))
+                             (meta (second doc'')))))))
+          referenced-var-docs
+          (when referenced-var-meta
+            (:doc (q/find-definition-from-cursor
+                    db uri
+                    (:row referenced-var-meta)
+                    (:col referenced-var-meta))))]
+      ;; Recur only when the definition has docs
+      (when referenced-var-docs
+        (recur db markdown? uri referenced-var-docs (inc cnt))))))
+
+(defn ^:private hover-signatures
+  [{:keys [meta arglist-strs parameters]}
+   join-char]
+  (or (let [node (some->> (:arglists meta) z/of-node)
+            sexpr (try (z/sexpr node) (catch Exception _ nil))]
+        (if (fast= 'quote (first sexpr))
+          (string/join join-char (second sexpr))
+          (z/string node)))
+      (some->> arglist-strs
+               (remove nil?)
+               (string/join join-char))
+      (some->> parameters
+               (string/join ", ")
+               (format "(%s)"))))
+
+(defn ^:private calling-line
+  [{namespace :ns :keys [name to method-name arglist-strs bucket]} markdown?]
+  (let [caller (condp = bucket
+                 :keyword-usages
+                 (str ":" name)
+
+                 :var-usages
+                 (str to "/" name)
+
+                 :local-usages
+                 name
+
+                 :instance-invocations
+                 (str "." method-name)
+
+                 (str namespace "/" name))
+        args (apply str (map (partial str " ") arglist-strs))
+        call (str "(" caller args ")")]
+    (if markdown?
+      (str clojure-opening-code "#_calling: " call closing-code line-break)
+      (str "calling: " call))))
+
+(defn hover-documentation
+  [{sym-ns :ns sym-name :name :keys [doc uri return-type bucket to] :as definition}
+   db*
+   {:keys [additional-text-edits? content-format-capability-path]}
+   & [calling]]
+  (let [db @db*
+        content-formats (get-in db (concat [:client-capabilities] (or content-format-capability-path
+                                                                      [:text-document :hover :content-format])))
+        arity-on-same-line? (or (settings/get db [:hover :arity-on-same-line?])
+                                (settings/get db [:show-docs-arity-on-same-line?]))
+        hide-filename? (settings/get db [:hover :hide-file-location?])
+        additional-edits-warning-text (settings/get db [:completion :additional-edits-warning-text])
+        join-char (if arity-on-same-line? " " "\n ")
+        special-form (when (and (= :var-usages bucket)
+                                (= 'clojure.core to)
+                                (not sym-ns)
+                                (#{:clj :cljc} (shared/uri->file-type uri)))
+                       (f.special-forms/special-form-doc sym-name))
+        special-form-signatures (some->> (:forms special-form)
+                                         (map pr-str)
+                                         (string/join join-char))
+        signatures (or (hover-signatures definition join-char)
+                       special-form-signatures)
+        sym (cond-> ""
+              return-type (str return-type " ")
+              sym-ns (str sym-ns "/")
+              sym-name (str sym-name))
+        sym-line (if special-form-signatures
+                   special-form-signatures
+                   (if signatures
+                     (str "(" sym join-char signatures ")")
+                     sym))
+        markdown? (some #{"markdown"} content-formats)
+        doc-line (or (special-form->hover-docs special-form sym-name markdown?)
+                     (find-docstring db markdown? uri doc 0))
+        clojuredocs (or (f.clojuredocs/find-hover-docs-for sym-name sym-ns db*)
+                        (when (and sym-ns (#{:cljs :cljc} (shared/uri->file-type uri)))
+                          (f.clojuredocs/find-hover-docs-for
+                            sym-name
+                            (string/replace (name sym-ns) "cljs" "clojure")
+                            db*)))
+        ;; TODO Consider using URI for display purposes, especially if we
+        ;; support remote LSP connections
+        filename (shared/uri->filename uri)]
+    (if markdown?
+      {:kind "markdown"
+       :value (cond-> (str (if (#{:java-member-definitions
+                                  :java-class-definitions} bucket)
+                             java-opening-code
+                             clojure-opening-code) sym-line closing-code)
+                calling
+                , ((partial str (calling-line calling markdown?)))
+                (and additional-text-edits? additional-edits-warning-text)
+                , (str "\n\n" additional-edits-warning-text)
+                clojuredocs
+                , (str "\n\n" (clojuredocs->hover-docs clojuredocs doc-line))
+                (and (not clojuredocs)
+                     doc-line)
+                , (str "\n\n" doc-line)
+                (and filename (not hide-filename?))
+                , (str (format "%s*[%s](%s)*"
+                               line-break
+                               (string/replace filename #"\\" "\\\\")
+                               uri)))}
+      ;; Default to plaintext
+      (cond-> []
+        calling
+        , (conj (calling-line calling markdown?))
+        (and sym
+             (not special-form-signatures))
+        , (conj {:language "clojure"
+                 :value (str (if arity-on-same-line? sym-line sym))})
+        (and signatures
+             (or (not arity-on-same-line?)
+                 special-form-signatures))
+        , (conj {:language "clojure"
+                 :value (str signatures)})
+        (and additional-text-edits? additional-edits-warning-text)
+        , (conj additional-edits-warning-text)
+        doc-line
+        , (conj doc-line)
+        (and filename (not hide-filename?))
+        , (conj filename)))))
+
+(defn hover
+  ([uri row col components] (hover uri row col components {}))
+  ([uri row col {:keys [db*] :as components} docs-config]
+   (let [db @db*
+         cursor-element (q/find-element-under-cursor db uri row col)
+         cursor-loc (some-> (f.file-management/force-get-document-text uri components)
+                            parser/safe-zloc-of-string
+                            (parser/to-pos row col))
+         func-position (some-> cursor-loc
+                               edit/find-function-usage-name-loc
+                               z/node
+                               meta)
+         func-element (when func-position
+                        (q/find-element-under-cursor db uri (:row func-position) (:col func-position)))
+         func-definition (when func-element (q/find-definition db func-element))
+         inside-ns (and cursor-loc (edit/inside-require? cursor-loc))
+         element (if (or (contains? #{:var-usages :var-definitions} (:bucket cursor-element))
+                         inside-ns)
+                   cursor-element
+                   (loop [try-col col]
+                     (if-let [usage (q/find-element-under-cursor db uri row try-col)]
+                       usage
+                       (when (pos? try-col)
+                         (recur (dec try-col))))))
+         definition (when element (q/find-definition db element))
+         show-calling? (not (settings/get db [:hover :hide-signature-call?]))
+         calling (when (and show-calling? element func-element (not= element func-element))
+                   (or func-definition func-element))]
+     (cond
+       definition
+       {:range (shared/->range element)
+        :contents (hover-documentation definition db* docs-config calling)}
+
+       element
+       {:range (shared/->range element)
+        :contents (hover-documentation element db* docs-config calling)}
+
+       func-definition
+       {:range (shared/->range func-element)
+        :contents (hover-documentation func-definition db* docs-config)}
+
+       func-element
+       {:range (shared/->range func-element)
+        :contents (hover-documentation func-element db* docs-config)}
+
+       :else
+       {:contents []}))))

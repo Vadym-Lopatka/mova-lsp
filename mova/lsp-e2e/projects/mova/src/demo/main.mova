@@ -1,0 +1,26 @@
+(ns demo.main
+  (:require
+   [demo.util :as util]))
+
+(defn build [n]
+  (let [cart (util/add-item {} :a n)
+        more (util/push-all [] [1 2 3])]
+    (assoc cart :more more)))
+
+(defn only-odd [xs]
+  (remove even? xs))
+
+(defn both [f g]
+  ((juxt f g) 1))
+
+(defn total [cart]
+  (let [unused 1]
+    (+ (get cart :a 0) (count (util/lookup cart :b)))))
+
+(defn fill [m]
+  (util/drop-nils (conj m [:z nil])))
+
+(defn run []
+  (both inc dec)
+  (total (build 2))
+  (only-odd (range 5)))

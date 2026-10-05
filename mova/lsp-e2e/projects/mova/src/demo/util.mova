@@ -1,0 +1,15 @@
+(ns demo.util)
+
+(defn add-item
+  "Adds an item to the cart map."
+  [cart k v]
+  (assoc cart k v))
+
+(defn push-all [coll xs]
+  (reduce conj coll xs))
+
+(defn lookup [m k]
+  (get m k :missing))
+
+(defn drop-nils [m]
+  (update-vals m #(or % 0)))

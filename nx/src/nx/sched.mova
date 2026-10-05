@@ -1,0 +1,35 @@
+;; Scheduler: doc events -> native pool (open/changed = high prio, coalesced natively; never blocks).
+;; Emits {:uri :version} / {:uri :closed} on :open for diags (which docs are open, latest version).
+(ns nx.sched)
+
+(defn handle
+  "[state' open-events] for one docs event. Calls the native pool (non-blocking)."
+  [{:keys [eng latest] :as s} {:keys [uri version text closed] :as ev}]
+  (cond
+    closed
+    (do (mova.nx/analyze-disk eng uri)                   ; revert to the on-disk entry, silently
+        [(update s :latest dissoc uri) [{:uri uri :closed true}]])
+    (and version (< version (get latest uri -1))) [s []]   ; stale event
+    :else
+    (do (mova.nx/analyze-text eng uri (or version 0) text)
+        [(assoc-in s [:latest uri] (or version 0)) [{:uri uri :version (or version 0)}]])))
+
+;; watched files on disk: created/changed are queued natively (diags publishes once they commit); deleted are dropped now.
+(defn handle-watch
+  "[watch-event] for {:changed [uri] :deleted [uri]}."
+  [{:keys [eng]} {:keys [changed deleted]}]
+  (let [queued (vec (mapcat #(mova.nx/watch-changed eng %) changed))
+        gone (map #(mova.nx/watch-deleted eng %) deleted)]
+    [{:queued queued
+      :deleted (vec (mapcat :deleted gone))
+      :refs (vec (distinct (mapcat :refs gone)))}]))
+
+(defn sched-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {} :watch {}} :outs {:open {} :watched {}}})
+    :init (fn [_] {:eng (mova.nx/engine) :latest {}})
+    :transform (fn [s in-id ev]
+                 (if (= in-id :watch)
+                   [s {:watched (handle-watch s ev)}]
+                   (let [[s evs] (handle s ev)]
+                     [s (if (seq evs) {:open evs} {})])))}))

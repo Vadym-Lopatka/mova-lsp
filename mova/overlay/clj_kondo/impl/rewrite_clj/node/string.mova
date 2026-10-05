@@ -1,0 +1,57 @@
+(ns ^{:no-doc true} clj-kondo.impl.rewrite-clj.node.string
+  (:require [clj-kondo.impl.rewrite-clj.node.protocols :as node]
+            [clj-kondo.impl.toolsreader.v1v2v2.clojure.tools.reader.edn :as edn]
+            [clojure.string :as string]))
+
+;; ## Node
+
+(defn- wrap-string
+  [s]
+  (str "\"" s "\""))
+
+(defn- join-lines
+  [lines]
+  (string/join "\n" lines))
+
+(defn- maybe-unescape
+  [s]
+  (if (string/includes? s "\\")
+    ;; MOVA-PATCH (e2): a \\uD83D\\uDD35 surrogate pair can't go through tools.reader's per-unit (char ..) on
+    ;; Mova (UTF-8 strings, no lone surrogates); Mova's own reader decodes the pair, same string value.
+    (if (string/includes? s "\\u")
+      (clojure.core/read-string (wrap-string s))
+      (edn/read-string (wrap-string s)))
+    s))
+
+(defrecord StringNode [lines]
+  node/Node
+  (tag [_]
+    (if (next lines)
+      :multi-line
+      :token))
+  (printable-only? [_]
+    false)
+  (sexpr [_]
+    (if (= (count lines) 1)
+      (maybe-unescape (nth lines 0))
+      (join-lines (map maybe-unescape lines))))
+  (length [_]
+    (+ 2 (reduce + (map count lines))))
+  (string [_]
+    (wrap-string (join-lines lines)))
+
+  Object
+  (toString [this]
+    (node/string this)))
+
+(node/make-printable! StringNode)
+
+;; ## Constructors
+
+(defn string-node
+  "Create node representing a string value.
+   Takes either a seq of strings or a single one."
+  [lines]
+  (if (string? lines)
+    (->StringNode [lines])
+    (->StringNode lines)))

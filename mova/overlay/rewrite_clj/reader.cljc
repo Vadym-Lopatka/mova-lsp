@@ -1,0 +1,347 @@
+(ns ^:no-doc rewrite-clj.reader
+  (:refer-clojure :exclude [peek next])
+  (:require [clojure.string :as string]
+            ;; MOVA-PATCH (mova/PLAN.md): mova has no `clojure.java.io`
+            ;; yet (owned by the "io" wave) and `file-reader` below --
+            ;; the ONLY consumer of `io/file`/`io/reader` in this file --
+            ;; is never called by anything clojure-lsp/rewrite-clj.zip
+            ;; needs (string-based parsing only), so drop the require
+            ;; instead of adding a whole library for two unused calls.
+            ;; `:mova` is checked before `:clj` in mova's `{:mova :clj
+            ;; :default}` feature set (first match in source order wins),
+            ;; so this splices to nothing under mova and is unchanged
+            ;; under real Clojure.
+            #?@(:mova [] :clj [[clojure.java.io :as io]])
+            [clojure.tools.reader.edn :as edn]
+            [clojure.tools.reader.impl.commons :as reader-impl-commons]
+            [clojure.tools.reader.impl.errors :as reader-impl-errors]
+            [clojure.tools.reader.impl.utils :as reader-impl-utils]
+            [clojure.tools.reader.reader-types :as r]
+            [rewrite-clj.interop :as interop])
+  #?(:cljs (:import [goog.string StringBuffer])
+     :clj (:import [java.io PushbackReader Closeable]
+                   [clojure.tools.reader.reader_types IndexingPushbackReader])))
+
+#?(:clj (set! *warn-on-reflection* true))
+
+;; ## Exception
+
+(defn throw-reader
+  "Throw reader exception, including line line/column."
+  [#?(:cljs ^:not-native reader :default reader) fmt & data]
+  (let [m (apply interop/simple-format fmt data)
+        c (r/get-column-number reader)
+        l (r/get-line-number reader)]
+    (throw
+      (ex-info
+        (str m " [at line " l ", column " c "]")
+        {:msg m
+         :row l
+         :col c}))))
+
+;; ## Decisions
+
+(defn boundary?
+  "Check whether a given char is a token boundary."
+  [#?(:clj ^java.lang.Character c :default c)]
+  ;; Note: indexOf here is more efficient that a hashset of characters.
+  #?(:clj (or (nil? c) (> (.indexOf "\":;'@^`~()[]{}\\" (int c)) -1))
+     :cljs (contains? #{\" \: \; \' \@ \^ \` \~ \( \) \[ \] \{ \} \\ nil} c)))
+
+(defn comma?
+  [#?(:clj ^java.lang.Character c :default c)]
+  (identical? \, c))
+
+(defn whitespace?
+  "Checks whether a given character is whitespace"
+  #?(:clj ^Boolean [^java.lang.Character c]
+     :default [c])
+  (interop/clojure-whitespace? c))
+
+(defn linebreak?
+  "Checks whether the character is a newline"
+  [#?(:clj ^java.lang.Character c :default c)]
+  (or (identical? c \newline) (identical? c \return)))
+
+(defn space?
+  "Checks whether the character is a space"
+  [#?(:clj ^java.lang.Character c :default c)]
+  (and c
+       (interop/clojure-whitespace? c)
+       (not (identical? c \newline))
+       (not (identical? c \,))))
+
+(defn whitespace-or-boundary?
+  #?(:clj ^Boolean [^java.lang.Character c]
+     :default [c])
+  (or (interop/clojure-whitespace? c) (boundary? c)))
+
+;; ## Helpers
+
+(defn read-into-buffer-while
+  "Read while the chars fulfill the given condition and append them into the
+  provided buffer. Ignores the unmatching char."
+  [reader #?(:clj ^StringBuilder buf :default ^StringBuffer buf) p? eof?]
+  (let [eof? (if (nil? eof?)
+               (not (p? nil))
+               eof?)]
+    (loop []
+      (if-let [c (r/read-char reader)]
+        (if (p? c)
+          (do
+            (.append buf (char c))
+            (recur))
+          (r/unread reader c))
+        (when-not eof?
+          (throw-reader reader "unexpected EOF"))))))
+
+(defn read-while
+  "Read while the chars fulfill the given condition. Ignores
+    the unmatching char."
+  ([#?(:cljs ^not-native reader :default reader) p?]
+   (read-while reader p? (not (p? nil))))
+
+  ([#?(:cljs ^not-native reader :default reader) p? eof?]
+   (let [buf #?(:clj (StringBuilder.) :cljs (StringBuffer.))]
+     (read-into-buffer-while reader buf p? eof?)
+     (.toString buf))))
+
+(defn read-until
+  "Read until a char fulfills the given condition. Ignores the
+   matching char."
+  [#?(:cljs ^not-native reader :default reader) p?]
+  (read-while
+    reader
+    (complement p?)
+    (p? nil)))
+
+(defn read-include-linebreak
+  "Read until linebreak and include it."
+  [#?(:cljs ^not-native reader :default reader)]
+  (str
+    (read-until
+      reader
+      #(or (nil? %) (linebreak? %)))
+    (r/read-char reader)))
+
+(defn string->edn
+  "Convert string to EDN value."
+  [#?(:clj ^String s :default s)]
+  (edn/read-string s))
+
+(defn ignore
+  "Ignore the next character."
+  [#?(:cljs ^not-native reader :default reader)]
+  (r/read-char reader)
+  nil)
+
+(defn next
+  "Read next char."
+  [#?(:cljs ^not-native reader :default reader)]
+  (r/read-char reader))
+
+(defn unread
+  "Unreads a char. Puts the char back on the reader."
+  [#?(:cljs ^not-native reader :default reader) ch]
+  (r/unread reader ch))
+
+(defn peek
+  "Peek next char."
+  [#?(:cljs ^not-native reader :default reader)]
+  (let [ch (r/peek-char reader)]
+    ;; compensate for cljs newline normalization in tools reader v1.3.5
+    ;; see https://clojure.atlassian.net/browse/TRDR-65
+    (if (identical? \return ch)
+      \newline
+      ch)))
+
+(defn position
+  "Create map of `row-k` and `col-k` representing the current reader position."
+  [#?(:cljs ^not-native reader :default reader) row-k col-k]
+  {row-k (r/get-line-number reader)
+   col-k (r/get-column-number reader)})
+
+(defn read-with-meta
+  "Use the given function to read value, then attach row/col metadata."
+  [#?(:cljs ^not-native reader :default reader) read-fn context]
+  (loop []
+    (let [start-row (r/get-line-number reader)
+          start-col (r/get-column-number reader)]
+      (when-let [entry (read-fn reader context)]
+        (if (identical? reader entry)
+          (recur)
+          ;; conj is more efficient here than into because it doesn't perform
+          ;; transient/persistent conversion if the second argument is nil.
+          (let [new-meta (conj {:row start-row
+                                :col start-col
+                                :end-row (r/get-line-number reader)
+                                :end-col (r/get-column-number reader)}
+                               (meta entry))]
+            (with-meta entry new-meta)))))))
+
+(defn read-repeatedly
+  "Call the given function on the given reader until it returns
+   a non-truthy value."
+  [#?(:cljs ^not-native reader :default reader) read-fn context]
+  (loop [acc []]
+    (if-let [x (read-fn reader context)]
+      (recur (conj acc x))
+      (or (seq acc) ()))))
+
+(defn read-n
+  "Call the given function on the given reader until `n` values matching `p?` have been
+   collected."
+  [#?(:cljs ^not-native reader :default reader) node-tag read-fn context p? n]
+  {:pre [(pos? n)]}
+  (loop [c 0
+         vs []]
+    (if (< c n)
+      (if-let [v (read-fn reader context)]
+        (recur
+          (if (p? v) (inc c) c)
+          (conj vs v))
+        (throw-reader
+          reader
+          "%s node expects %d value%s."
+          node-tag
+          n
+          (if (= n 1) "" "s")))
+      vs)))
+
+;;
+;; ## Customizations
+;;
+(defn read-keyword
+  "This customized version of clojure.tools.reader.edn's read-keyword allows for
+  an embedded `::` in a keyword to to support [garden-style keywords](https://github.com/noprompt/garden)
+  like `:&::before`. This function was transcribed from clj-kondo."
+  [reader]
+  (let [ch (r/read-char reader)]
+    (if-not (reader-impl-utils/whitespace? ch)
+      (let [#?(:clj ^String token :default token) (#'edn/read-token reader :keyword ch)
+            s (reader-impl-commons/parse-symbol token)]
+        (if (and s
+                 ;; (== -1 (.indexOf token "::")) becomes:
+                 (not (zero? (.indexOf token "::"))))
+          (let [#?(:clj ^String ns :default ns) (s 0)
+                #?(:clj ^String name :default name) (s 1)]
+            (if (identical? \: (nth token 0))
+              (reader-impl-errors/throw-invalid reader :keyword token) ; No ::kw in edn.
+              (keyword ns name)))
+          (reader-impl-errors/throw-invalid reader :keyword token)))
+      (reader-impl-errors/throw-single-colon reader))))
+
+(defn- parse-symbol
+  "Parses a string into a Symbol object, either unqualified or namespaced.
+
+  Cribbed from clojure/cljs.tools.reader.impl.commons/parse-symbol merging clj and cljs fns into single implementation
+  Added in equivalent of TRDR-73 patch to allow array class symbols (e.g. foobar/3)."
+  [^String token]
+  (when-not (or (= token "")
+                (string/ends-with? token ":")
+                (string/starts-with? token "::"))
+    (if-let [ns-idx (string/index-of token "/")]
+      (let [ns (subs token 0 ns-idx)
+            ns-idx (inc ns-idx)]
+        (when-not (== ns-idx (count token))
+          (let [sym (subs token ns-idx)]
+            (when (or (contains? #{"1" "2" "3" "4" "5" "6" "7" "8" "9"} sym)
+                      (and (not (interop/numeric? (nth sym 0)))
+                           (not (= "" sym))
+                           (not (string/ends-with? ns ":"))
+                           (or (= sym "/")
+                               (nil? (string/index-of sym "/")))))
+              (symbol ns sym)))))
+      (symbol token))))
+
+(defn read-symbol
+  "Return symbol parsed from `token`.
+
+  Cribbed from clojure/cljs.tools.reader.edn/read-symbol and - adapted to work on string"
+  [^String token]
+  (case token
+    ;; special symbols
+    "nil" nil
+    "true" true
+    "false" false
+    "/" '/
+
+    (or (parse-symbol token)
+        ;; Throw in same way that tools.reader would when reading a string
+        ;; for exeption compatibility. Some users, like clojure-lsp, currently rely
+        ;; on parsing exception strings. A user having to resort
+        ;; to parsing exception messages is not great, but a separate issue.
+        (reader-impl-errors/throw-invalid nil :symbol token))))
+
+;; ## Reader Types
+
+;;
+;; clojure.tools.reader (at the time of this writing v1.3.5) does not seem to normalize Windows \r\n newlines
+;; properly to \n for Clojure
+;;
+;; ClojureScript seems to work fine - but note that for peek it will return \r for \r\n and \r\f instead of \n.
+;;
+;; see https://clojure.atlassian.net/browse/TRDR-65
+;;
+;; For now, we introduce a normalizing reader for Clojure.
+;; Once/if this isssue is fixed in in tools reader we can turf our work-around.
+
+#?(:clj
+   (deftype NewlineNormalizingReader [rdr]
+     r/Reader
+     (read-char [_reader]
+       (let [ch (r/read-char rdr)]
+         (if-not (identical? \return ch)
+           ;; Happy path
+           ch
+           ;; Complicated path
+           (let [ch2 (r/read-char rdr)]
+             (when-not (or (identical? \newline ch2)
+                           (identical? \formfeed ch2))
+               (r/unread rdr ch2))
+             \newline))))
+
+     (peek-char [_reader]
+       (let [ch (r/peek-char rdr)]
+         (if (identical? \return ch)
+           \newline
+           ch)))
+
+     r/IPushbackReader
+     (unread [_reader ch] (r/unread rdr ch))))
+
+#?(:clj
+   (defn newline-normalizing-reader
+     "Normalizes the following line endings to LF (line feed - 0x0A):
+      - LF (remains LF)
+      - CRLF (carriage return 0x0D line feed 0x0A)
+      - CRFF (carriage return 0x0D form feed 0x0C)
+      IMPORTANT: `pbr` must be an IPushbackReader with a buffer of at least 2."
+     ^Closeable [pbr]
+     {:pre [(satisfies? r/IPushbackReader pbr)]}
+     (->NewlineNormalizingReader pbr)))
+
+(defn- indexing-reader
+  "Creates a new IndexingPushbackReader from a reader that is assumed to already
+  be a IPushbackReader, hence no double PushbackReader-wrapping is performed.`"
+  [pbr]
+  (r/->IndexingPushbackReader pbr 1 1 true nil 0 nil false))
+
+#?(:clj
+   (defn file-reader
+     "Create reader for files."
+     ^IndexingPushbackReader
+     [f]
+     (-> (io/file f)
+         (io/reader)
+         (PushbackReader. 2)
+         newline-normalizing-reader
+         indexing-reader)))
+
+(defn string-reader
+  "Create reader for strings."
+  [s]
+  (-> s
+      (r/string-push-back-reader 2)
+      #?@(:clj [newline-normalizing-reader])
+      indexing-reader))

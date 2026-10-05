@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# nx-stats: reads the nx metrics session files. Run without arguments for usage.
+set -euo pipefail
+NX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MOVA_BIN="${MOVA_BIN:-mova}"
+export MOVA_REFLECTION_WARNINGS=0 MOVA_JIT=0 MOVA_SHARDS=1
+exec "$MOVA_BIN" --module-path "$NX_DIR/src" "$NX_DIR/bin/nx-stats.mova" "$@"

@@ -1,0 +1,378 @@
+;; nx.core.latency — the "where does the server spend time" picture. Pure fold, no requires.
+;; The stage-stats half (log2-bucket .. percentile, the stage test in sanitize) is a sample project's latency namespace, copied:
+;; every sample is thrown away, only a mergeable 24-slot log2 histogram is kept. Stage :m/inject-us = t0 (request
+;; frame seen by the reader) -> reply frame flushed by the writer.
+;; The nx half joins the two edge taps (mova.nx/tap-drain!) into one picture:
+;;   tap = [kind t len id method key outcome]   keys only, never a message
+;;     kind 0 = reader (t = t0) | 1 = writer (t = t1) | 2 = writer, raw frame not understood
+;;     method = one of the closed set, "other", or nil (a reply)
+;;     key  = uri (didOpen/didChange/didClose, publishDiagnostics) | command (executeCommand) | rootUri (initialize)
+;;            | "end" ($/progress with kind end)
+;;   request (id + method) joins its reply by id                          -> [:ops op]
+;;   didOpen/didChange joins the next publishDiagnostics of the same uri  -> [:ops "pipe/diagnostics"] (from the last edit)
+;; Native numbers (mova.nx/met-take!, nx_core::met) are merged in by note-native: worker jobs "job/open" / "job/bg",
+;; the project pass "bg/pass" + :bg counters; note-mem and startup add :mem and :startup.
+;; state = {:pic picture :req {:cur {} :old {}} :diag {uri t0} :cmds #{command} :init-ns [t0 t1] :settled-ns t
+;;          :progress-end-ns t}
+(ns nx.core.latency)
+
+(def ^:private bucket-count 24)
+
+(defn log2-bucket
+  "us -> the index of the highest set bit of (max us 1), capped at (dec bucket-count). Bucket i covers
+  [2^i, 2^(i+1)) us; the top bucket (23) is a catch-all for ~8.4 s+."
+  [us]
+  (let [us (max us 1)]
+    (loop [n 1 b 0]
+      (if (or (>= b (dec bucket-count)) (> (* n 2) us))
+        b
+        (recur (* n 2) (inc b))))))
+
+(defn note-sample
+  "Fold one microsecond sample into stage-stats {:count :sum-us :max-us :buckets}, creating a zeroed map when
+  stage-stats is nil. buckets is a 24-element vector of counts, indexed by log2-bucket."
+  [stage-stats us]
+  (let [stage-stats (or stage-stats {:count 0 :sum-us 0 :max-us 0
+                                     :buckets (vec (repeat bucket-count 0))})
+        b (log2-bucket us)]
+    (-> stage-stats
+        (update :count inc)
+        (update :sum-us + us)
+        (update :max-us max us)
+        (update-in [:buckets b] inc))))
+
+(defn merge-stage
+  "Element-wise merge of two stage-stats maps: counts and sums add, max-us maxes, buckets add element-wise. nil on
+  either side is the identity."
+  [a b]
+  (cond
+    (nil? a) b
+    (nil? b) a
+    :else
+    {:count (+ (:count a) (:count b))
+     :sum-us (+ (:sum-us a) (:sum-us b))
+     :max-us (max (:max-us a) (:max-us b))
+     :buckets (mapv + (:buckets a) (:buckets b))}))
+
+(defn percentile
+  "Approximate microseconds at quantile q (0.0-1.0) over stage-stats' bucket histogram: walk buckets low-to-high
+  until the cumulative count reaches the target rank, then return that bucket's midpoint (1.5 * 2^i). nil when count
+  is 0. Target rank: nearest-rank with an upper-median bias, (inc (long (* n q)))."
+  [stage-stats q]
+  (let [n (:count stage-stats 0)]
+    (when (pos? n)
+      (let [target (inc (long (* n q)))
+            buckets (:buckets stage-stats)]
+        (loop [i 0 acc 0]
+          (if (>= i bucket-count)
+            (quot (* 3 (bit-shift-left 1 (dec bucket-count))) 2)
+            (let [acc* (+ acc (get buckets i 0))]
+              (if (>= acc* target)
+                (quot (* 3 (bit-shift-left 1 i)) 2)
+                (recur (inc i) acc*)))))))))
+
+;; ---- the nx picture ----
+
+(def known-ops
+  "The closed op set: client requests and notifications, server notifications and requests, pipelines. A command is
+  `cmd/<command>` (known commands only, else `cmd/other`); anything else is \"other\". The native tap holds the
+  same method list (mova nx_tap.rs METHODS) and already maps any other method to \"other\"."
+  #{"callHierarchy/incomingCalls" "callHierarchy/outgoingCalls" "clojure/clojuredocs/raw" "clojure/cursorInfo/raw"
+    "clojure/cursorInfo/log" "clojure/dependencyContents" "clojure/serverInfo/raw" "clojure/serverInfo/log"
+    "clojure/workspace/projectTree/nodes" "codeLens/resolve" "completionItem/resolve" "initialize" "shutdown"
+    "textDocument/codeAction" "textDocument/codeLens" "textDocument/completion" "textDocument/declaration"
+    "textDocument/definition" "textDocument/documentHighlight" "textDocument/documentSymbol"
+    "textDocument/foldingRange" "textDocument/formatting" "textDocument/hover" "textDocument/implementation"
+    "textDocument/linkedEditingRange" "textDocument/prepareCallHierarchy" "textDocument/prepareRename"
+    "textDocument/rangeFormatting" "textDocument/references" "textDocument/rename" "textDocument/selectionRange"
+    "textDocument/semanticTokens/full" "textDocument/semanticTokens/range" "textDocument/signatureHelp"
+    "workspace/executeCommand" "workspace/symbol" "workspace/willRenameFiles" "nx/ping"
+    "initialized" "exit" "$/cancelRequest" "$/setTrace" "textDocument/didOpen" "textDocument/didChange"
+    "textDocument/didSave" "textDocument/didClose" "workspace/didChangeWatchedFiles"
+    "workspace/didChangeConfiguration" "workspace/didChangeWorkspaceFolders" "window/workDoneProgress/cancel"
+    "textDocument/publishDiagnostics" "$/progress" "window/showMessage" "window/showDocument"
+    "window/showMessageRequest" "window/workDoneProgress/create" "workspace/applyEdit"
+    "client/registerCapability" "client/unregisterCapability" "workspace/configuration" "window/logMessage"
+    "client/response" "pipe/diagnostics"})
+
+(def ^:private cap 4096)                                   ; pending joins: at most 2*cap requests, cap uris
+
+(defn initial
+  "Fold state for a new session. config = {:nx/version .. :root nil :jit n :shards n :pid n}."
+  [since-ms config commands]
+  {:pic {:v 1 :since-ms since-ms :config config :ops {} :lost-join 0}
+   :req {:cur {} :old {}} :diag {} :cmds (set commands)})
+
+;; Journal rows (NX_OBS=1, nx.core.journal): when :jr is a vector the fold also appends one row per event, from the
+;; same joined data; :t is the tap clock (ns), main turns it into wall time. Off (:jr nil): nothing is built.
+(defn journal "state' that collects journal rows." [st] (assoc st :jr []))
+
+(defn take-rows "[rows state'] : the rows collected so far, and the state with none." [st]
+  [(or (:jr st) []) (cond-> st (:jr st) (assoc :jr []))])
+
+(defn- emit [st row] (if (:jr st) (update st :jr conj row) st))
+
+(defn unanswered-rows
+  "Journal rows for the requests that never got a reply (at exit)."
+  [st]
+  (vec (for [[id v] (concat (:cur (:req st)) (:old (:req st))) :when (:t0 v)]
+         {:t (:t0 v) :tel/kind :request :op (:op v) :id id :outcome :unanswered :bytes (:len v) :uri (:key v)})))
+
+(defn- op-key [st method key]
+  (cond
+    (and key (= method "workspace/executeCommand")) (if (contains? (:cmds st) key) (str "cmd/" key) "cmd/other")
+    (contains? known-ops method) method
+    :else "other"))
+
+(defn- bump [st op k n]
+  (update-in st [:pic :ops op k] (fnil + 0) n))
+
+(defn- sample [st op t0 t1 outcome]
+  (-> st
+      (update-in [:pic :ops op :stages :m/inject-us] note-sample (quot (- t1 t0) 1000))
+      (update-in [:pic :ops op :outcomes outcome] (fnil inc 0))))
+
+(defn- pend
+  "Adds a pending join. Two generations: when the current one is full, the older one is dropped (counted)."
+  [st id v]
+  (let [{:keys [cur old]} (:req st)]
+    (if (>= (count cur) cap)
+      (-> st (assoc :req {:cur {id v} :old cur}) (update-in [:pic :lost-join] + (count old))
+          (emit {:t (or (:t0 v) (:t1 v)) :tel/kind :lost :by :join :count (count old)}))
+      (assoc-in st [:req :cur id] v))))
+
+(defn- unpend
+  "[entry state'] for id; entry is nil when nothing is pending."
+  [st id]
+  (let [{:keys [cur old]} (:req st)]
+    (cond
+      (contains? cur id) [(get cur id) (update-in st [:req :cur] dissoc id)]
+      (contains? old id) [(get old id) (update-in st [:req :old] dissoc id)]
+      :else [nil st])))
+
+(defn- join
+  "One side of a request/reply pair arrived. Either side may come first (the reader taps after its hand-off)."
+  [st id side]
+  (let [[other st] (unpend st id)
+        both (merge other side)]
+    (if (and (:t0 both) (:t1 both))
+      (cond-> (sample st (:op both) (:t0 both) (:t1 both) (:outcome both))
+        (and (= "initialize" (:op both)) (nil? (:init-ns st))) (assoc :init-ns [(:t0 both) (:t1 both)])
+        (:jr st) (emit {:t (:t0 both) :tel/kind :request :op (:op both) :id id :outcome (:outcome both)
+                        :m/inject-us (quot (- (:t1 both) (:t0 both)) 1000) :bytes (:len both) :uri (:key both)}))
+      (pend st id both))))
+
+(defn- on-in [st [_ t0 len id method key]]
+  (if (nil? method)
+    (-> st (bump "client/response" :count 1) (emit {:t t0 :tel/kind :notify :op "client/response" :bytes len}))
+    (let [op (op-key st method key)
+          uri (when-not (= method "workspace/executeCommand") key)
+          st (-> st (bump op :count 1) (bump op :bytes len))
+          st (if (nil? id) (emit st {:t t0 :tel/kind :notify :op op :bytes len :uri uri}) st)]
+      (cond
+        (some? id) (cond-> (join st id {:t0 t0 :op op :len len :key uri})
+                     (and key (= method "initialize")) (assoc-in [:pic :config :root] key))
+        (nil? key) st
+        (= method "textDocument/didClose") (update st :diag dissoc key)
+        (and (>= (count (:diag st)) cap) (not (contains? (:diag st) key)))
+        (-> st (update-in [:pic :lost-join] + (count (:diag st))) (assoc :diag {key t0})
+            (emit {:t t0 :tel/kind :lost :by :join :count (count (:diag st))}))
+        :else (assoc-in st [:diag key] t0)))))
+
+(defn- on-out [st [kind t1 _ id method key outcome]]
+  (cond
+    (= kind 2) (-> st (bump "other" :sent 1) (emit {:t t1 :tel/kind :sent :op "other"}))
+    method (let [op (op-key st method nil)
+                 end? (and (= key "end") (= method "$/progress"))
+                 st (cond-> (bump st op :sent 1)
+                      (and end? (nil? (:progress-end-ns st))) (assoc :progress-end-ns t1))
+                 st (if (:jr st) (emit st {:t t1 :tel/kind :sent :op op :uri (when-not end? key) :phase (when end? "end")}) st)
+                 t0 (when key (get (:diag st) key))]
+             (if t0
+               (-> st (update :diag dissoc key) (sample "pipe/diagnostics" t0 t1 :ok)
+                   (emit {:t t1 :tel/kind :pipe :op "pipe/diagnostics" :uri key :m/inject-us (quot (- t1 t0) 1000)}))
+               st))
+    (some? id) (join st id {:t1 t1 :outcome (or outcome :ok)})
+    :else st))
+
+(defn fold
+  "state' for one tap."
+  [st tap]
+  (if (zero? (nth tap 0)) (on-in st tap) (on-out st tap)))
+
+(defn view
+  "The picture of a fold state. :unanswered = requests seen with no reply yet."
+  [st]
+  (let [{:keys [cur old]} (:req st)]
+    (assoc (:pic st) :unanswered (count (filter :t0 (concat (vals cur) (vals old)))))))
+
+(defn- nat? [x] (and (integer? x) (>= x 0)))
+
+(defn- stage-ok?
+  "the sanitize test: a zeroed-but-well-formed stage must not pass (snapshot divides by :count)."
+  [s]
+  (and (map? s)
+       (number? (:count s)) (pos? (:count s))
+       (number? (:sum-us s))
+       (number? (:max-us s))
+       (vector? (:buckets s))
+       (= bucket-count (count (:buckets s)))
+       (every? number? (:buckets s))))
+
+(defn- counts
+  "Keeps the entries of m whose key passes key-ok? and whose value is a count."
+  [m key-ok?]
+  (into {} (filter (fn [[k v]] (and (key-ok? k) (nat? v)))) (if (map? m) m {})))
+
+(defn- plain? [x] (or (nil? x) (keyword? x) (number? x) (boolean? x) (and (string? x) (<= (count x) 400))))
+
+(defn- sanitize-op [e]
+  (let [n (fn [k] (if (nat? (get e k)) {k (get e k)} {}))
+        stages (into {} (filter (fn [[k s]] (and (keyword? k) (stage-ok? s)))) (if (map? (:stages e)) (:stages e) {}))]
+    (cond-> (merge (n :count) (n :bytes) (n :sent))
+      (seq (counts (:outcomes e) keyword?)) (assoc :outcomes (counts (:outcomes e) keyword?))
+      (seq stages) (assoc :stages stages))))
+
+(defn sanitize
+  "A session file is machine-written, but disk contents are still input. Keeps only the well-formed parts of a
+  picture; nil for anything that is not a v1 picture."
+  [p]
+  (when (and (map? p) (= 1 (:v p)) (map? (:ops p)))
+    (let [num (fn [k] (when (number? (get p k)) (get p k)))
+          cnt (fn [k] (if (nat? (get p k)) (get p k) 0))
+          cfg (if (map? (:config p)) (:config p) {})
+          err (if (map? (:errors p)) (:errors p) {})]
+      (cond->
+       {:v 1
+       :since-ms (num :since-ms)
+       :until-ms (num :until-ms)
+       :ended (true? (:ended p))
+       :sessions (if (pos? (cnt :sessions)) (cnt :sessions) 1)
+       :config (into {} (filter (fn [[k v]] (and (keyword? k) (plain? v)))) cfg)
+       :ops (into {} (keep (fn [[op e]] (when (and (string? op) (<= (count op) 120) (map? e)) [op (sanitize-op e)])))
+                  (:ops p))
+       :errors {:count (if (nat? (:count err)) (:count err) 0)
+                :by-pid (counts (:by-pid err) plain?)
+                :last (when (map? (:last err)) (into {} (filter (fn [[k v]] (and (keyword? k) (plain? v)))) (:last err)))}
+       :lost (cnt :lost)
+       :lost-by (counts (:lost-by p) keyword?)
+       :unanswered (cnt :unanswered)
+       :fold-errors (cnt :fold-errors)}
+        (map? (:bg p)) (assoc :bg {:passes (if (nat? (:passes (:bg p))) (:passes (:bg p)) 0)
+                                   :last (counts (:last (:bg p)) keyword?)
+                                   :total (counts (:total (:bg p)) keyword?)})
+        (seq (counts (:mem p) keyword?)) (assoc :mem (counts (:mem p) keyword?))
+        (seq (counts (:startup p) keyword?)) (assoc :startup (counts (:startup p) keyword?))
+        (map? (:procs p)) (assoc :procs (into {} (keep (fn [[k v]] (when (and (keyword? k) (map? v) (nat? (:count v)))
+                                                                     [k {:count (:count v) :status (when (keyword? (:status v)) (:status v))}])))
+                                              (:procs p)))))))
+
+(defn- merge-op [a b]
+  (cond-> (merge-with + (select-keys a [:count :bytes :sent]) (select-keys b [:count :bytes :sent]))
+    (or (:outcomes a) (:outcomes b)) (assoc :outcomes (merge-with + (:outcomes a) (:outcomes b)))
+    (or (:stages a) (:stages b)) (assoc :stages (merge-with merge-stage (:stages a) (:stages b)))))
+
+(defn merge-pictures
+  "Element-wise merge of two sanitized pictures: counts add, stages merge-stage, :since-ms takes the earlier,
+  :until-ms the later, :last error the later one. :ended only when both ended. nil on either side is the identity.
+  :bg totals add (:last = the later picture's); of :mem only :max-b is kept; :startup is per session and dropped."
+  [a b]
+  (cond
+    (nil? a) b
+    (nil? b) a
+    :else
+    (let [lo (fn [x y] (cond (nil? x) y (nil? y) x :else (min x y)))
+          hi (fn [x y] (cond (nil? x) y (nil? y) x :else (max x y)))
+          ea (:errors a) eb (:errors b)
+          later (if (>= (or (:until-ms b) 0) (or (:until-ms a) 0)) [b a] [a b])
+          bga (:bg a) bgb (:bg b)
+          max-b (hi (:max-b (:mem a)) (:max-b (:mem b)))]
+      (cond->
+       {:v 1
+       :since-ms (lo (:since-ms a) (:since-ms b))
+       :until-ms (hi (:until-ms a) (:until-ms b))
+       :ended (and (:ended a) (:ended b))
+       :sessions (+ (:sessions a 1) (:sessions b 1))
+       :config (if (= (:root (:config a)) (:root (:config b))) {:root (:root (:config a))} {})
+       :ops (merge-with merge-op (:ops a) (:ops b))
+       :errors {:count (+ (:count ea 0) (:count eb 0))
+                :by-pid (merge-with + (:by-pid ea) (:by-pid eb))
+                :last (if (>= (or (:until-ms b) 0) (or (:until-ms a) 0)) (or (:last eb) (:last ea)) (or (:last ea) (:last eb)))}
+       :lost (+ (:lost a 0) (:lost b 0))
+       :lost-by (merge-with + (:lost-by a) (:lost-by b))
+       :unanswered (+ (:unanswered a 0) (:unanswered b 0))
+       :fold-errors (+ (:fold-errors a 0) (:fold-errors b 0))}
+        (or bga bgb) (assoc :bg {:passes (+ (:passes bga 0) (:passes bgb 0))
+                                 :last (or (:last (:bg (first later))) (:last (:bg (second later))))
+                                 :total (merge-with + (:total bga) (:total bgb))})
+        max-b (assoc :mem {:max-b max-b})))))
+
+;; ---- native numbers: worker jobs, project pass, memory, startup ----
+
+(defn note-native
+  "state' with one mova.nx/met-take! delta {:jobs {op {:count :bytes :stages {stage S}}} :passes [{:end-ns :stages
+  {stage us} :n {counter n}}]}. Job stage-stats merge (merge-stage) into [:ops \"job/open\" | \"job/bg\"]; a pass
+  adds its spans to [:ops \"bg/pass\"] and its counters to :bg {:passes :last :total}."
+  [st nat]
+  (let [st (reduce (fn [st [op e]] (update-in st [:pic :ops op] merge-op e)) st (:jobs nat))]
+    (reduce (fn [st {:keys [stages n end-ns]}]
+              (-> (reduce (fn [st [k us]] (update-in st [:pic :ops "bg/pass" :stages k] note-sample us)) st stages)
+                  (bump "bg/pass" :count 1)
+                  (update-in [:pic :bg] (fn [bg] {:passes (inc (:passes bg 0)) :last n :total (merge-with + (:total bg) n)}))
+                  (update :settled-ns #(or % end-ns))))
+            st (:passes nat))))
+
+(defn note-mem
+  "state' with one footprint reading [bytes peak-bytes] (nil = not known): :mem {:init-b :settled-b :max-b :last-b}.
+  init-b = the first reading after initialize was answered, settled-b = the first after a project pass ended,
+  max-b = the kernel's lifetime peak."
+  [st fp]
+  (if-let [[b peak] fp]
+    (update-in st [:pic :mem]
+               (fn [m] (cond-> (assoc m :last-b b :max-b (max (:max-b m 0) b (or peak 0)))
+                         (and (nil? (:init-b m)) (:init-ns st)) (assoc :init-b b)
+                         (and (nil? (:settled-b m)) (:settled-ns st)) (assoc :settled-b b))))
+    st))
+
+(defn startup
+  "The startup stamps in us from the process start: {:spawn-us :main-us :initialize-in-us :initialize-out-us
+  :settled-us :progress-end-us}; a stamp not reached yet is left out. settled = the last file of the first project
+  pass committed; progress-end = the first `$/progress` end flushed (only when the client gave a workDoneToken).
+  base = mova.nx/met-base {:ns :up-us :spawn-us :main-us}."
+  [st base]
+  (when base
+    (let [at (fn [t] (when t (- (:up-us base) (quot (- (:ns base) t) 1000))))
+          [in out] (:init-ns st)]
+      (into {} (filter (fn [[_ v]] (some? v)))
+            {:spawn-us (:spawn-us base) :main-us (:main-us base) :initialize-in-us (at in) :initialize-out-us (at out)
+             :settled-us (at (:settled-ns st)) :progress-end-us (at (:progress-end-ns st))}))))
+
+(defn snapshot
+  "picture -> the for-humans view: per op its counts and, per stage, {:count :avg-us :p50-us :p99-us :max-us}."
+  [p]
+  (assoc p :ops
+         (into {}
+               (map (fn [[op e]]
+                      [op (if-let [stages (:stages e)]
+                            (assoc e :stages
+                                   (into {}
+                                         (map (fn [[stage stage-stats]]
+                                                [stage {:count (:count stage-stats)
+                                                        :avg-us (let [c (:count stage-stats 0)]
+                                                                  (when (pos? c) (quot (:sum-us stage-stats) c)))
+                                                        :p50-us (percentile stage-stats 0.5)
+                                                        :p99-us (percentile stage-stats 0.99)
+                                                        :max-us (:max-us stage-stats)}]))
+                                         stages))
+                            e)]))
+               (:ops p))))
+
+(def ^:private top-keys
+  [:v :since-ms :until-ms :ended :sessions :config :errors :lost :lost-by :unanswered :fold-errors :startup :mem :bg :procs])
+
+(defn edn-str
+  "Pretty EDN of a picture: one top-level key per line, one op per line pair, ops sorted."
+  [p]
+  (let [line (fn [k] (when (contains? p k) (str " " (pr-str k) " " (pr-str (get p k)) "\n")))
+        ops (map (fn [op] (str (pr-str op) "\n  " (pr-str (get (:ops p) op)))) (sort (keys (:ops p))))]
+    (str "{" (subs (apply str (map line top-keys)) 1) " :ops\n {" (apply str (interpose "\n  " ops)) "}}\n")))

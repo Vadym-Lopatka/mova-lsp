@@ -1,0 +1,114 @@
+;; Mova project support: stdlib .mova analysis + Rust native definitions from `mova --source-index`.
+(ns clojure-lsp.mova-project
+  (:require
+   [cheshire.core :as json]
+   [clojure-lsp.kondo :as lsp.kondo]
+   [clojure-lsp.logger :as logger]
+   [clojure-lsp.shared :as shared]
+   [clojure.java.io :as io]
+   [clojure.java.shell :as shell]
+   [clojure.string :as string]))
+
+(def ^:private logger-tag "[mova-project]")
+
+;; {:mova? bool :index-fut future}; single project per server process.
+(defonce ^:private state* (atom {}))
+;; index cache keyed by [source mtime]: {:key k :index parsed :natives {[ns name] {...}}}
+(defonce ^:private index-cache* (atom nil))
+
+(defn mova? [] (boolean (:mova? @state*)))
+
+(defn- has-mova-file? [dir]
+  (let [f (io/file dir)]
+    (boolean (and (.isDirectory f)
+                  (some (fn [^java.io.File x] (and (.isFile x) (string/ends-with? (.getName x) ".mova")))
+                        (file-seq f))))))
+
+(defn detect
+  "Project is Mova when root has `mova.edn` or a `.mova` file in a source path (default `src`, `test`)."
+  [root-path source-paths]
+  (or (.exists (io/file (str root-path) "mova.edn"))
+      (boolean (some #(has-mova-file? (shared/to-file (str root-path) %))
+                     (or (seq source-paths) ["src" "test"])))))
+
+(defn- index-source []
+  (if-let [p (System/getenv "MOVA_SOURCE_INDEX")]
+    {:file p}
+    (when-let [b (System/getenv "MOVA_BIN")] {:bin b})))
+
+(defn- source-key [{:keys [file bin]}]
+  (let [p (or file bin)] [p (.lastModified (io/file p))]))
+
+(defn- load-index* [src]
+  (let [s (if (:file src)
+            (slurp (:file src))
+            (let [{:keys [exit out err]} (shell/sh (:bin src) "--source-index")]
+              (if (zero? exit) out (throw (ex-info "mova --source-index failed" {:err err})))))
+        idx (json/parse-string s true)]
+    {:index idx
+     :natives (into {} (map (fn [n] [[(symbol (:ns n)) (symbol (:name n))] n])) (:natives idx))}))
+
+(defn index
+  "Parsed source index (cached per binary path + mtime), or nil."
+  []
+  (try
+    (when-let [src (index-source)]
+      (let [k (source-key src)
+            c @index-cache*]
+        (if (= k (:key c))
+          c
+          (let [c (assoc (load-index* src) :key k)]
+            (reset! index-cache* c)
+            c))))
+    (catch Exception e
+      (logger/warn logger-tag "source index unavailable:" (ex-message e))
+      nil)))
+
+(defn init!
+  "Detect a Mova project; if so, start loading the index in the background."
+  [root-path source-paths]
+  (let [m? (detect root-path source-paths)]
+    (swap! state* assoc :mova? m?)
+    (when m?
+      (swap! state* assoc :index-fut (future (index))))
+    m?))
+
+(defn- index-now []
+  (when (mova?)
+    (or (some-> (:index-fut @state*) (deref 5000 nil))
+        @index-cache*)))
+
+(defn native-location
+  "Rust location {:uri :line(0-based) :file :file-line(1-based)} of a Mova native var element, or nil."
+  [db element]
+  (when (and (mova?) (= :var-usages (:bucket element)) (:to element) (:name element))
+    (when-let [{:keys [index natives]} (index-now)]
+      (when-let [n (get natives [(symbol (:to element)) (symbol (:name element))])]
+        (let [path (str (:root index) "/" (:file n))]
+          {:uri (shared/filename->uri path db)
+           :line (dec (:line n))
+           :file (:file n)
+           :file-line (:line n)})))))
+
+(defn native-hover-line [loc]
+  (str "Mova native (Rust): " (:file loc) ":" (:file-line loc)))
+
+(defn- stdlib-text [path ns-name]
+  (let [t (slurp path)]
+    ;; stdlib files like core/core.mova have no ns form; give kondo one on line 1 (keeps line numbers)
+    (if (re-find #"(?m)^\(ns[\s]" t) t (str "(ns " ns-name ") " t))))
+
+(defn analyze-stdlib!
+  "Analyze the index's stdlib .mova files (not already in the db) as external sources."
+  [db*]
+  (when (mova?)
+    (when-let [{:keys [index]} (index-now)]
+      (doseq [{:keys [ns file]} (:namespaces index)]
+        (let [path (str (:root index) "/" file)
+              uri (shared/filename->uri path @db*)]
+          (when (and (.exists (io/file path)) (not (get-in @db* [:analysis uri])))
+            (try
+              (let [res (lsp.kondo/run-kondo-on-text! (stdlib-text path ns) uri db* "mova-stdlib")]
+                (swap! db* lsp.kondo/db-with-results (dissoc res :findings)))
+              (catch Exception e
+                (logger/warn logger-tag "stdlib analysis failed" file (ex-message e))))))))))

@@ -1,0 +1,7 @@
+{"v":1,"mova_rev":"sample","root":"/path/to/mova",
+ "namespaces":[{"ns":"clojure.core","file":"core/core.mova"}],
+ "natives":[{"ns":"clojure.core","name":"conj","file":"src/builtins/collections.rs","line":1326},
+            {"ns":"clojure.core","name":"assoc","file":"src/builtins/collections.rs","line":1359},
+            {"ns":"clojure.core","name":"get","file":"src/builtins/collections.rs","line":1500},
+            {"ns":"clojure.core","name":"count","file":"src/builtins/collections.rs","line":1942},
+            {"ns":"clojure.core","name":"first","file":"src/builtins/collections.rs","line":2118}]}

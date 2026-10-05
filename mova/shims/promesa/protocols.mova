@@ -1,0 +1,27 @@
+;; lsp/host (clojure-lsp-on-Mova campaign, mova/PLAN.md): a `promesa.
+;; protocols` shim covering EXACTLY the two protocols `jsonrpc4clj.server`
+;; (vendored, unmodified) extends on its own `PendingRequest`/
+;; `PendingReceivedRequest` defrecords: `IPromiseFactory`/`-promise` (so an
+;; external caller that treats a `PendingRequest` as a promise-like thing
+;; gets the real inner deferred back) and `ICancellable`/`-cancel!`/
+;; `-cancelled?` (delegation for `PendingReceivedRequest`). `promesa.core`
+;; (this campaign's shim) never itself DISPATCHES through these protocols
+;; -- its own `cancel!`/`cancelled?`/`promise` operate directly on the
+;; raw deferred (see that file's doc) -- so this file's only job is to
+;; make the two `defprotocol`s exist so `jsonrpc4clj.server`'s
+;; `defrecord`s implementing them can load.
+;;
+;; NOT covered (real promesa has ~10 protocols in this file): `IPromise`,
+;; `IState`, `ICompletable`, `IExecutor`, `IScheduler`, `ISemaphore`,
+;; `ILock`, the `core.async`-flavoured channel protocols. No grepped call
+;; site in `jsonrpc4clj`/`lsp4clj`/clojure-lsp's `cli/src/clojure_lsp/
+;; server.clj` needs any of them.
+
+(ns promesa.protocols)
+
+(defprotocol IPromiseFactory
+  (-promise [it] "Create a promise instance from other types"))
+
+(defprotocol ICancellable
+  (-cancel! [it])
+  (-cancelled? [it]))

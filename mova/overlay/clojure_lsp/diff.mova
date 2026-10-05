@@ -1,0 +1,51 @@
+(ns clojure-lsp.diff
+  (:require
+   [clojure-lsp.shared :as shared]
+   [clojure.string :as string]
+   [mova.diff :as mova.diff]))
+
+(set! *warn-on-reflection* true)
+
+;; MOVA-PATCH (mova/PLAN.md "reuse Rust crates"): real `DiffUtils/diff` +
+;; `DiffUtils/generateUnifiedDiff` (java-diff-utils) replaced by ONE native
+;; call over the `similar` crate -- see `mova.diff`'s doc
+;; (`src/builtins/difftext.rs`) for why the two JVM calls collapse into one
+;; here (they always compose at this single call site). `original`/
+;; `revised` go in as whole text, not pre-split lines -- the native does
+;; its own line splitting.
+(defn unified-diff
+  ([old-uri new-uri original revised project-root-uri]
+   (unified-diff old-uri new-uri original revised project-root-uri 3))
+  ([old-uri new-uri original revised project-root-uri context]
+   (let [project-path (shared/uri->filename project-root-uri)]
+     (mova.diff/unified-diff
+       (str "a/" (-> old-uri
+                     shared/uri->filename
+                     (shared/relativize-filepath project-path)))
+       (str "b/" (-> new-uri
+                     shared/uri->filename
+                     (shared/relativize-filepath project-path)))
+       original
+       revised
+       context))))
+
+(defn rename-diff
+  [old-uri new-uri project-root-uri]
+  (let [project-path (shared/uri->filename project-root-uri)]
+    (->> [(str "rename from " (-> old-uri
+                                  shared/uri->filename
+                                  (shared/relativize-filepath project-path)))
+          (str "rename to " (-> new-uri
+                                shared/uri->filename
+                                (shared/relativize-filepath project-path)))]
+         (string/join shared/line-separator))))
+
+(defn colorize-diff [diff-text]
+  (-> diff-text
+      (string/replace #"(?m)^(rename from .*)$"  (shared/colorize "$1" :yellow))
+      (string/replace #"(?m)^(rename to .*)$"  (shared/colorize "$1" :yellow))
+      (string/replace #"(?m)^(\-\-\-\sa.*)$"  (shared/colorize "$1" :yellow))
+      (string/replace #"(?m)^(\+\+\+\sb.*)$"  (shared/colorize "$1" :yellow))
+      (string/replace #"(?m)^(@@.*@@)$"       (shared/colorize "$1" :cyan))
+      (string/replace #"(?m)^(\+(?!\+\+).*)$" (shared/colorize "$1" :green))
+      (string/replace #"(?m)^(-(?!--).*)$"    (shared/colorize "$1" :red))))

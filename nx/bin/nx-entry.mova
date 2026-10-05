@@ -1,0 +1,2 @@
+(require 'nx.main)
+(apply nx.main/-main *command-line-args*)

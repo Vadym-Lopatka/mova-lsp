@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""nx-gate: score a server (default nx) against JVM clojure-lsp goldens (lsp-e2e settled answers).
+   nx/bin/nx-gate [--server-cmd CMD] [--only clj] [--oracle CAND_DIR [--oracle-golden DIR]] [--json-out F] [--label L]
+Per project x method: golden / equal / differ / missing (server null, golden not). Plus first 3 diffs per method."""
+import argparse, importlib.util, json, os, subprocess, sys, tempfile, time
+from collections import OrderedDict
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "test")); import nxenv  # private XDG_STATE_HOME / XDG_CONFIG_HOME for every spawned server
+
+NX = Path(__file__).resolve().parent.parent
+WT = NX.parent
+spec = importlib.util.spec_from_file_location("lsp_e2e_run", WT / "mova/lsp-e2e/run.py")
+sys.path.insert(0, str(WT / "mova/lsp-e2e"))
+run = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(run)
+
+METHODS = ["diagnostics", "definition", "hover", "references", "completion"]
+
+
+def isnull(v):
+    return v is None or v == [] or v == {}
+
+
+def score(results):
+    allow = {(a["project"], a["key"]) for a in json.loads((run.HERE / "allow.json").read_text())} \
+        if (run.HERE / "allow.json").exists() else set()
+    table, diffs = OrderedDict(), {}
+    for r in sorted(results, key=lambda r: r["name"]):
+        gold = {k: v for k, v in json.loads(run.golden_path(r["name"]).read_text()).items() if not k.startswith("depcopy:")}
+        got = r["settled"]
+        for k, w in sorted(gold.items()):
+            if (r["name"], k) in allow:
+                continue
+            m = k.rsplit(":", 1)[1]
+            c = table.setdefault((r["name"], m), dict(golden=0, equal=0, differ=0, missing=0))
+            c["golden"] += 1
+            g = got.get(k)
+            if g == w:
+                c["equal"] += 1
+            elif isnull(g) and isnull(w):
+                c["equal"] += 1
+            elif isnull(g):
+                c["missing"] += 1
+                diffs.setdefault((r["name"], m), []).append(f"{k} got=null want={json.dumps(w)[:int(os.environ.get("NX_DIFF_W", "90"))]}")
+            else:
+                c["differ"] += 1
+                diffs.setdefault((r["name"], m), []).append(f"{k} got={json.dumps(g)[:int(os.environ.get("NX_DIFF_W", "90"))]} want={json.dumps(w)[:int(os.environ.get("NX_DIFF_W", "90"))]}")
+        jar = r.get("jar", [])
+        c = table.setdefault((r["name"], "jar"), dict(golden=0, equal=0, differ=0, missing=0))
+        want = 2 * min(3, len({v for k, v in gold.items() if k.endswith(":definition") and str(v).startswith("jar:")}))
+        c["golden"] = want
+        bad = [(cc, u, d) for cc, u, d in jar if d]
+        c["equal"], c["differ"] = len(jar) - len(bad), len(bad)
+        c["missing"] = max(0, want - len(jar))
+        for cc, u, d in bad:
+            diffs.setdefault((r["name"], "jar"), []).append(f"{cc} {u} {d}")
+    return table, diffs
+
+
+MISSING_RE = __import__("re").compile(r"not found|not implemented|unsupported|unknown method|timed? ?out|^ERR:$", __import__("re").I)
+
+
+def score_ext(results):
+    """Extended probes (mova/lsp-e2e/ext.py): per project x method equal/differ/missing vs golden/<proj>.ext.json."""
+    table, diffs = OrderedDict(), {}
+    for r in sorted(results, key=lambda r: r["name"]):
+        gp = run.ext_golden_path(r["name"])
+        if not gp.exists() or "ext" not in r:
+            continue
+        gold, got = json.loads(gp.read_text()), {**r.get("ext", {}), **r.get("ext_proj", {})}
+        for k, w in sorted(gold.items()):
+            m = k.rsplit(":", 1)[1]
+            c = table.setdefault((r["name"], m), dict(golden=0, equal=0, differ=0, missing=0, nn=0, nn_eq=0))
+            c["golden"] += 1
+            c["nn"] += not isnull(w)
+            g = got.get(k)
+            c["nn_eq"] += (g == w and not isnull(w))
+            if g == w or (isnull(g) and isnull(w)):
+                c["equal"] += 1
+            elif isnull(g) or (isinstance(g, str) and g.startswith("ERR:") and MISSING_RE.search(g) and not (isinstance(w, str) and w.startswith("ERR:"))):
+                c["missing"] += 1
+                diffs.setdefault((r["name"], m), []).append(f"{k} got={json.dumps(g)[:int(os.environ.get("NX_DIFF_W", "90"))]} want={json.dumps(w)[:int(os.environ.get("NX_DIFF_W", "90"))]}")
+            else:
+                c["differ"] += 1
+                diffs.setdefault((r["name"], m), []).append(f"{k} got={json.dumps(g)[:int(os.environ.get("NX_DIFF_W", "90"))]} want={json.dumps(w)[:int(os.environ.get("NX_DIFF_W", "90"))]}")
+    return table, diffs
+
+
+def oracle(d):
+    p = subprocess.run([sys.executable, str(NX / "oracle/diff.py"), "--json", str(NX / "oracle/golden") if (NX / "oracle/golden").exists() else "", d],
+                       capture_output=True, text=True)
+    return p
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--server-cmd", default=str(NX / "bin/nx-lsp"))
+    ap.add_argument("--only")
+    ap.add_argument("--oracle")
+    ap.add_argument("--oracle-golden")
+    ap.add_argument("--ext", action="store_true", help="force extended probes (default: on when golden/<proj>.ext.json exists)")
+    ap.add_argument("--no-ext", action="store_true")
+    ap.add_argument("--dump-probes", help="write per-probe got values (settled/ext/ext_proj/jar) to this JSON file")
+    ap.add_argument("--cmd", type=int, nargs="?", const=1, default=0, metavar="N",
+                    help="optional table: executeCommand + clojure/* custom requests vs JVM goldens (nx/test/cmd_e2e.py --quick N, default 1 per project x command)")
+    ap.add_argument("--label", default="nx")
+    ap.add_argument("--json-out", default=os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "nx-gate-summary.json"))
+    ap.add_argument("--mova-bin")  # default: nx Mova build for nx-lsp (MOVA_BIN env wins), owner default for mova/bin/clojure-lsp
+    a = ap.parse_args()
+    nx_srv = "nx-lsp" in a.server_cmd
+    mova = a.mova_bin or os.environ.get("MOVA_BIN") or run.DEFAULT_MOVA
+    args = argparse.Namespace(server_cmd=a.server_cmd, mova_bin=mova, full=False, settled_only=True, only=a.only,
+                              store_warm=False, budget=10, json=False,
+                              ext=not a.no_ext and (a.ext or any(run.ext_golden_path(d.name).exists() for d in (run.HERE / "projects").iterdir())))
+    t0 = time.monotonic()
+    xdg = run.xdg_dir()
+    xdg.mkdir(parents=True, exist_ok=True)
+    errdir = Path(tempfile.mkdtemp(prefix="nx-gate-logs-"))
+    names = [d.name for d in sorted((run.HERE / "projects").iterdir())
+             if (d / "e2e.json").exists() and d.name != "mova" and (not a.only or d.name == a.only)]
+    tmps = []
+    try:
+        results = run.collect(args, names, xdg, tmps, errdir)
+    finally:
+        for d in tmps:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+    if a.dump_probes:
+        Path(a.dump_probes).write_text(json.dumps({r["name"]: {k: r.get(k) for k in ("settled", "ext", "ext_proj", "jar")} for r in results}, sort_keys=True))
+    table, diffs = score(results)
+    etable, ediffs = score_ext(results) if args.ext else (OrderedDict(), {})
+    slow = [r["name"] for r in results if not r.get("bg_signal")]
+    print(f"{'project':7} {'method':12} {'golden':>6} {'equal':>6} {'differ':>6} {'missing':>7} {'pct':>6}")
+    tot = dict(golden=0, equal=0, differ=0, missing=0)
+    for (n, m), c in table.items():
+        print("%-7s %-12s %6d %6d %6d %7d %5.1f%%" % (n, m, c["golden"], c["equal"], c["differ"], c["missing"],
+                                                     100.0 * c["equal"] / c["golden"] if c["golden"] else 100.0))
+        for k in tot:
+            tot[k] += c[k]
+    pct = 100.0 * tot["equal"] / tot["golden"] if tot["golden"] else 0.0
+    print("%-7s %-12s %6d %6d %6d %7d %5.1f%%" % ("TOTAL", "", tot["golden"], tot["equal"], tot["differ"], tot["missing"], pct))
+    for (n, m), ds in diffs.items():
+        for d in ds[:3]:
+            print(f"diff {n} {m}: {d}")
+    if etable:
+        print("\n== ext (extended methods; not in TOTAL above) ==")
+        print(f"{'method':24} {'golden':>6} {'equal':>6} {'differ':>6} {'missing':>7} {'pct':>6} {'nonnull':>7} {'nn-eq':>6}   per project (equal/golden)")
+        bym = OrderedDict()
+        for (n, m), c in etable.items():
+            byp = bym.setdefault(m, dict(golden=0, equal=0, differ=0, missing=0, nn=0, nn_eq=0, proj=[]))
+            for kk in ("golden", "equal", "differ", "missing", "nn", "nn_eq"):
+                byp[kk] += c[kk]
+            byp["proj"].append(f"{n} {c['equal']}/{c['golden']}")
+        etot = dict(golden=0, equal=0, differ=0, missing=0, nn=0, nn_eq=0)
+        for m, c in sorted(bym.items()):
+            print("%-24s %6d %6d %6d %7d %5.1f%% %7d %6d   %s" % (m, c["golden"], c["equal"], c["differ"], c["missing"],
+                                                        100.0 * c["equal"] / c["golden"], c["nn"], c["nn_eq"], ", ".join(c["proj"])))
+            for kk in etot:
+                etot[kk] += c[kk]
+        print("%-24s %6d %6d %6d %7d %5.1f%% %7d %6d" % ("EXT TOTAL", etot["golden"], etot["equal"], etot["differ"], etot["missing"],
+                                                 100.0 * etot["equal"] / max(1, etot["golden"]), etot["nn"], etot["nn_eq"]))
+        for (n, m), ds in ediffs.items():
+            for d in ds[:3]:
+                print(f"ediff {n} {m}: {d}")
+    if slow:
+        print(f"NOTE no bg-done signal within cap for: {slow} (answers taken anyway)")
+    summary = dict(label=a.label, total=tot, pct=round(pct, 1), bg_missing=slow,
+                   table={f"{n}/{m}": c for (n, m), c in table.items()},
+                   diffs={f"{n}/{m}": ds[:3] for (n, m), ds in diffs.items()},
+                   ext_table={f"{n}/{m}": c for (n, m), c in etable.items()},
+                   ext_diffs={f"{n}/{m}": ds[:3] for (n, m), ds in ediffs.items()})
+    if a.oracle:
+        gold = a.oracle_golden or os.path.expanduser("~/.cache/nx-oracle/golden/" + Path(a.oracle).name)
+        p = subprocess.run([sys.executable, str(NX / "oracle/diff.py"), "--json", gold, a.oracle], capture_output=True, text=True)
+        try:
+            t = json.loads(p.stdout)["total"]
+            tl = "TOTAL golden %d cand %d matched %d missing %d extra %d parity %.2f%%" % (
+                t["golden"], t["candidate"], t["matched"], t["missing"], t["extra"], t["parity"])
+        except Exception:
+            tl = "FAILED " + (p.stderr or p.stdout)[-200:]
+        print("oracle " + tl)
+        summary["oracle_total"] = tl
+    if a.cmd:
+        tc = time.monotonic()
+        p = subprocess.run([sys.executable, str(NX / "test/cmd_e2e.py"), "--quick", str(a.cmd)], capture_output=True, text=True,
+                           env=dict(os.environ, MOVA_BIN=mova, XDG_CACHE_HOME=str(xdg)))
+        line = (p.stdout.strip().splitlines() or ["cmd_e2e: no output"])[-1]
+        print(f"\n== cmd (executeCommand / custom requests; not in TOTAL above) ==\n{line}  [{time.monotonic() - tc:.1f}s]")
+        for l in p.stdout.splitlines()[:-1][:12]:
+            print("  " + l[:200])
+        summary["cmd"] = line
+    wall = time.monotonic() - t0
+    summary["wall_s"] = round(wall, 2)
+    Path(a.json_out).write_text(json.dumps(summary, indent=1) + "\n")
+    print(f"wall {wall:.1f}s  json {a.json_out}  logs {errdir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

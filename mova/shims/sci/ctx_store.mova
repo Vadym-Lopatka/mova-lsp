@@ -1,0 +1,17 @@
+;; sci.ctx-store SHIM (mova/PLAN.md "hooks (sci)" wave). Real sci.ctx-store
+;; is a tiny mutable-box helper (an atom) for a single "current ctx",
+;; letting code far from the `sci/init` call site (e.g. a hook's own body,
+;; via `store/get-ctx`) reach it without threading it through every fn.
+;; `clj-kondo.impl.hooks` (the only caller, grep-verified) uses exactly
+;; `reset-ctx!`/`get-ctx` -- this is a plain 1:1 port, nothing sci-specific
+;; to shim here.
+(ns sci.ctx-store)
+
+(def ^:private ctx* (atom nil))
+
+(defn reset-ctx! [ctx]
+  (reset! ctx* ctx)
+  ctx)
+
+(defn get-ctx []
+  @ctx*)

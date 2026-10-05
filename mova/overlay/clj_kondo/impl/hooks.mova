@@ -1,0 +1,342 @@
+;; MOVA-PATCH: real sci-backed hook execution (mova/PLAN.md "hooks (sci)"
+;; wave), now that `sci.core`/`sci.ctx-store` are real shims
+;; (mova/shims/sci/{core,ctx_store}.mova -- evaluate hook code with Mova's
+;; own reader/eval in a dedicated real namespace, see that file's header
+;; for exactly what differs from real sci, chiefly: no sandboxing).
+;; `walk`/`prewalk`/`unprefix-gen-token`/`annotate`/`macroexpand` are a
+;; verbatim port (pure tree-rewriting, unaffected by any of this).
+;; `hook-fn*`/`hook-fn` are a near-verbatim port of upstream.
+;; `file-sha256`/`ns-stale?`/`hook-file-for-ns` (upstream content-hash
+;; caching, restored below) use Mova's `MessageDigest/getInstance
+;; "SHA-256"` whole-buffer `.digest` instead of `FileInputStream`
+;; streaming (Mova has no `FileInputStream`); content is read with
+;; `slurp`+`.getBytes`, both already used elsewhere in this file.
+(ns clj-kondo.impl.hooks
+  {:no-doc true}
+  (:refer-clojure :exclude [select-keys macroexpand])
+  (:require
+   [clj-kondo.hooks-api :as api]
+   [clj-kondo.impl.config :as config]
+   [clj-kondo.impl.findings :as findings]
+   [clj-kondo.impl.metadata :as meta]
+   [clj-kondo.impl.utils :as utils :refer [select-keys some']]
+   [clojure.java.io :as io]
+   [clojure.pprint]
+   [clojure.string :as str]
+   [sci.core :as sci]
+   [sci.ctx-store :as store]))
+
+(set! *warn-on-reflection* true)
+
+(defn time*
+  "Evaluates expr and prints the time it took.  Returns the value of expr."
+  [_ _ expr]
+  `(let [start# (System/nanoTime)
+         ret# ~expr]
+     (prn (str "Elapsed time: " (/ (double (- (System/nanoTime) start#)) 1000000.0) " msecs"))
+     ret#))
+
+(defn find-file-on-classpath ^java.io.File
+  [base-path]
+  (some (fn [cp-entry]
+          (some (fn [ext]
+                  (let [f (io/file cp-entry (str base-path "." ext))]
+                    (when (.exists f) f)))
+                ["clj_kondo" "clj" "cljc"]))
+        (:classpath utils/*ctx*)))
+
+;; MOVA-PATCH: hook code runs with "no sandboxing" (see file header) --
+;; `require` resolves against Mova's real global namespace table, so a
+;; hook ns whose name collides with a real dependency ns of clojure-lsp
+;; itself (e.g. `babashka.fs`, which has both a real Mova shim AND ships
+;; a same-named clj-kondo hook file) silently reuses the REAL ns instead
+;; of loading the hook file, and misses the hook fn (real sci isolates
+;; these in a separate ns registry). Fix: always load/require/resolve
+;; hook namespaces under a private prefix so they never alias a real ns.
+(def ^:private sandbox-prefix "clj-kondo.hook-sandbox.")
+
+(defn- sandbox-ns-sym [ns-str]
+  (symbol (str sandbox-prefix ns-str)))
+
+(defn- unsandbox-ns-str [ns-str]
+  (if (str/starts-with? ns-str sandbox-prefix)
+    (subs ns-str (count sandbox-prefix))
+    ns-str))
+
+(def ans (sci/create-ns 'clj-kondo.hooks-api nil))
+
+(def api-ns
+  {'keyword-node api/keyword-node
+   'keyword-node? api/keyword-node?
+   'string-node api/string-node
+   'string-node? api/string-node?
+   'token-node api/token-node
+   'token-node? api/token-node?
+   'quote-node api/quote-node
+   'quote-node? api/quote-node?
+   'vector-node api/vector-node
+   'vector-node? api/vector-node?
+   'map-node api/map-node
+   'map-node? api/map-node?
+   'list-node api/list-node
+   'list-node? api/list-node?
+   'sexpr api/sexpr
+   'tag api/tag
+   'reg-finding! api/reg-finding!
+   'reg-keyword! api/reg-keyword!
+   'coerce api/coerce
+   'ns-analysis api/ns-analysis
+   'generated-node? api/generated-node?
+   'resolve api/resolve
+   'env     api/env
+   'set-node api/set-node
+   'set-node? api/set-node?
+   'node? api/node?
+   'callstack api/callstack})
+
+(defn pprint [& args]
+  (binding [*out* @sci/out]
+    (apply clojure.pprint/pprint args)))
+
+(defn initial-ctx []
+  (sci/init {:namespaces {'clojure.core {'time (with-meta time* {:sci/macro true})}
+                          'clojure.pprint {'pprint pprint}
+                          'clj-kondo.hooks-api api-ns}
+             ;; MOVA-PATCH: restored (were pruned to `{}` -- see file
+             ;; history) now that `System`/`AssertionError`/
+             ;; `java.io.File`/`clojure.lang.LineNumberingPushbackReader`
+             ;; all resolve as real class VALUES (`types::builtin_classes()`
+             ;; rows; `System` added by this campaign, same shape as
+             ;; `Math`). `java.io.StringReader` stays OUT: mova has no
+             ;; `HostKind` for it at all yet (no constructor either, not
+             ;; just no class value) -- restoring it here would be a
+             ;; no-op map entry pointing at an unresolvable symbol.
+             :classes {'System System
+                       'java.io.File java.io.File
+                       'clojure.lang.LineNumberingPushbackReader clojure.lang.LineNumberingPushbackReader
+                       'java.lang.AssertionError AssertionError}
+             :imports {'System java.lang.System}
+             :load-fn (fn [{:keys [namespace]}]
+                        (let [real-ns-str (unsandbox-ns-str (name namespace))
+                              base-path (str/replace (namespace-munge real-ns-str) "." "/")]
+                          (if-let [f (find-file-on-classpath base-path)]
+                            {:file (.getAbsolutePath f)
+                             ;; rewrite `(ns <real-ns> ...)` -> `(ns <sandboxed-ns> ...)`
+                             ;; so this hook file lands in the private sandbox ns, not
+                             ;; the real (possibly already-loaded) namespace of that name.
+                             :source (str/replace-first (slurp f)
+                                                         (str "(ns " real-ns-str)
+                                                         (str "(ns " (name namespace)))}
+                            (binding [*out* *err*]
+                              (println "WARNING: file" base-path "not found while loading hook")
+                              nil))))}))
+
+(def ^:private hook-resolve-cache
+  (volatile! {}))
+
+(defn reset-ctx! []
+  (store/reset-ctx! (initial-ctx))
+  (vreset! hook-resolve-cache {}))
+
+(reset-ctx!)
+
+(defn walk
+  [inner outer form]
+  (cond
+    (instance? clj_kondo.impl.rewrite_clj.node.protocols.Node form)
+    (outer (utils/update-some form :children #(mapv inner %)))
+    :else (outer form)))
+
+(defn prewalk
+  [f form]
+  (walk (partial prewalk f) identity (f form)))
+
+(def ^:private gen-ns-prefix "clj-kondo.gen-macros.")
+
+(defn- unprefix-gen-token
+  [node]
+  (if (and (instance? clj_kondo.impl.rewrite_clj.node.token.TokenNode node)
+           (let [v (:value node)]
+             (and (symbol? v)
+                  (when-let [n (namespace v)]
+                    (clojure.string/starts-with? n gen-ns-prefix)))))
+    (let [v (:value node)
+          v' (with-meta (symbol (subs (namespace v) (count gen-ns-prefix))
+                                (name v))
+               (meta v))]
+      (with-meta (assoc node :value v' :string-value (str v'))
+        (meta node)))
+    node))
+
+(defn annotate
+  {:no-doc true}
+  [node original-meta]
+  (let [!!last-meta (volatile! (assoc original-meta :derived-location true))]
+    (prewalk (fn [node]
+               (let [node (unprefix-gen-token node)]
+                 (cond
+                   (and (instance? clj_kondo.impl.rewrite_clj.node.seq.SeqNode node)
+                        (identical? :list (utils/tag node)))
+                   (if-let [m (meta node)]
+                     (if-let [m (not-empty (select-keys m [:row :end-row :col :end-col]))]
+                       (do (vreset! !!last-meta (assoc m :derived-location true))
+                           node)
+                       (-> (with-meta node
+                             (merge @!!last-meta (meta node)))
+                           utils/mark-generate))
+                     (->
+                      (with-meta node
+                        @!!last-meta)
+                      utils/mark-generate))
+                   (instance? clj_kondo.impl.rewrite_clj.node.protocols.Node node)
+                   (let [m (meta node)]
+                     (if (:row m)
+                       node
+                       (-> (with-meta node
+                             (merge @!!last-meta m))
+                           utils/mark-generate)))
+                   :else node)))
+             node)))
+
+(defn macroexpand [macro node bindings]
+  (let [call (api/sexpr node)
+        args (rest call)
+        res (apply macro call (cond-> bindings
+                                (identical? :cljs (:lang utils/*ctx*))
+                                (assoc :ns (select-keys (:ns utils/*ctx*) [:name]))) args)
+        coerced (api/coerce res)
+        annotated (annotate coerced (meta node))
+        lifted (meta/lift-meta-content2 utils/*ctx* annotated)]
+    lifted))
+
+;; MOVA-PATCH: restored upstream's content-hash-based staleness check
+;; (was dropped, see file header history) using Mova's own
+;; `MessageDigest/getInstance "SHA-256"` (whole-buffer `.digest`, no
+;; incremental `.update`) instead of `FileInputStream` streaming.
+(defn- file-sha256 [f]
+  (let [bytes (.getBytes (slurp f))
+        md (java.security.MessageDigest/getInstance "SHA-256")]
+    (utils/bytes->hex (.digest md bytes))))
+
+(defn- hook-file-for-ns ^java.io.File [ns-str]
+  (when ns-str
+    (find-file-on-classpath (str/replace (namespace-munge ns-str) "." "/"))))
+
+(defn- ns-stale?
+  "See upstream `clj-kondo.impl.hooks/ns-stale?` for the full rationale."
+  [ns-str ^java.io.File f]
+  (when (and f (.exists f))
+    (let [path (.getAbsolutePath f)
+          prev (get-in @hook-resolve-cache [:ns-stamps ns-str])
+          h (file-sha256 f)]
+      (cond
+        (nil? prev)
+        (do (vswap! hook-resolve-cache assoc-in [:ns-stamps ns-str] {:path path :hash h})
+            false)
+        (and (= path (:path prev)) (= h (:hash prev)))
+        false
+        :else
+        (do (vswap! hook-resolve-cache assoc-in [:ns-stamps ns-str] {:path path :hash h})
+            true)))))
+
+(defn- hook-needs-reload? [ns-str]
+  (or api/*reload*
+      (ns-stale? ns-str (hook-file-for-ns ns-str))))
+
+(defn- hook-fn*
+  [ctx config ns-sym var-sym]
+  (let [sym (symbol (str ns-sym) (str var-sym))
+        hook-cfg (:hooks config)
+        filename (:filename ctx)]
+    (when hook-cfg
+      (if-let [x (or (get-in hook-cfg [:analyze-call sym])
+                      (some' (fn [group-sym]
+                               (get-in hook-cfg [:analyze-call (symbol (str group-sym) (str var-sym))]))
+                             (config/ns-groups-eduction ctx config ns-sym filename)))]
+        (sci/binding [sci/out *out*
+                      sci/err *err*]
+          (binding [utils/*ctx* ctx]
+            (let [code (if (string? x)
+                         (when (:allow-string-hooks ctx) x)
+                         (let [ns (namespace x)
+                               reload? (hook-needs-reload? ns)
+                               sbox (sandbox-ns-sym ns)
+                               sbox-x (symbol (str sbox) (name x))]
+                           (format "%s(require '%s %s)\n%s"
+                                   (if reload? (format "(when (find-ns '%s) (remove-ns '%s))\n" sbox sbox) "")
+                                   sbox
+                                   (if reload? :reload "")
+                                   sbox-x)))]
+              (sci/eval-string* (store/get-ctx) code))))
+        (when-let [x (or (get-in hook-cfg [:macroexpand sym])
+                          (some' (fn [group-sym]
+                                   (get-in hook-cfg [:macroexpand (symbol (str group-sym) (str var-sym))]))
+                                 (config/ns-groups-eduction ctx config ns-sym filename)))]
+          (sci/binding [sci/out *out*
+                        sci/err *err*]
+            (binding [utils/*ctx* ctx]
+              (let [code (if (string? x)
+                           (when (:allow-string-hooks ctx) x)
+                           (let [ns (namespace x)
+                                 reload? (hook-needs-reload? ns)
+                                 sbox (sandbox-ns-sym ns)
+                                 sbox-x (symbol (str sbox) (name x))]
+                             (format "%s(require '%s %s)\n(var %s)"
+                                     (if reload? (format "(when (find-ns '%s) (remove-ns '%s))\n" sbox sbox) "")
+                                     sbox
+                                     (if reload? :reload "")
+                                     sbox-x)))
+                    the-var (sci/eval-string* (store/get-ctx) code)]
+                (when (and the-var (not (string? x)) (not (:macro (meta the-var))))
+                  (binding [*out* *err*]
+                    (println (str "WARNING: macroexpand hook " x " is not a macro"))))
+                (when-let [macro (if (var? the-var) @the-var the-var)]
+                  (let [macro-ns (:ns (meta the-var))]
+                    (fn [{:keys [node]}]
+                      {:node (if macro-ns
+                               (sci/binding [sci/ns macro-ns]
+                                 (macroexpand macro node (:bindings utils/*ctx*)))
+                               (macroexpand macro node (:bindings utils/*ctx*)))})))))))))))
+
+(def ^:private hook-not-found (Object.))
+
+;; MOVA-PATCH: linting is multi-threaded; hook resolution isn't otherwise
+;; synchronized (`hook-resolve-cache` is a `volatile!`, and `eval-string*`
+;; mutates the shared, non-sandboxed `*ns*` via `in-ns` -- see its header).
+;; A concurrent hook load/eval racing another thread's own namespace
+;; resolution was observed to corrupt `*ns*` mid-analysis (a fresh
+;; namespace, e.g. our `clj-kondo.hook-sandbox.*` ones, only exercises
+;; that `in-ns` path the first time it's required). Serialize the whole
+;; resolve+eval so hook loading never overlaps across threads.
+(def ^:private hook-lock (Object.))
+
+(defn hook-fn
+  ([ctx config ns-sym var-sym]
+   (hook-fn ctx config ns-sym var-sym nil))
+  ([ctx config ns-sym var-sym expr-meta]
+   (try
+     (locking hook-lock
+       (let [hooks-cfg (:hooks config)
+             _ (vswap! hook-resolve-cache
+                       (fn [cv] (if (identical? hooks-cfg (:hooks-cfg cv)) cv
+                                    {:hooks-cfg hooks-cfg :ns-stamps (:ns-stamps cv)})))
+             k [ns-sym var-sym]
+             v (get @hook-resolve-cache k hook-not-found)]
+         (if (identical? v hook-not-found)
+           (let [ret (hook-fn* ctx config ns-sym var-sym)]
+             (vswap! hook-resolve-cache assoc k ret)
+             ret)
+           v)))
+     (catch Exception e
+       (let [msg (str "Error while loading hook for " ns-sym "/" var-sym ": " (.getMessage e))]
+         (when (= "true" (System/getenv "CLJ_KONDO_DEV"))
+           (binding [*out* *err*]
+             (println e)))
+         (findings/reg-finding!
+          ctx
+          (assoc (select-keys expr-meta [:row :col :end-row :end-col])
+                 :filename (:filename ctx)
+                 :type :hook
+                 :level :error
+                 :message msg)))
+       nil))))

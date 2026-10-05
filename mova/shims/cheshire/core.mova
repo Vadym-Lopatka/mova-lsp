@@ -1,0 +1,105 @@
+;; lsp/io (clojure-lsp-on-Mova campaign, mova/PLAN.md): a `cheshire.core`
+;; shim, per PLAN.md rule #2 ("shim namespace when a whole library is Java
+;; underneath" -- real cheshire is a thin Clojure API over Jackson, and
+;; Jackson is exactly the kind of "clear request/response contract" data-
+;; in/data-out piece PLAN.md's "reuse Rust crates" rule says to replace
+;; with a mature Rust crate rather than port). The actual JSON codec is
+;; `mova.json/parse-string`/`generate-string` (`src/builtins/io.rs`,
+;; `serde_json`-backed, lsp/host branch, registered under the real
+;; `mova.json` namespace -- review round 2: no bare `mova-*` globals);
+;; this file is only the cheshire-shaped policy on top: `:key-fn`/
+;; keywordization and `:pretty`.
+;;
+;; Review round 2: `key-fn true` (by far the common case -- LSP parses a
+;; message per keystroke) is now a NATIVE fast path -- `mova.json/parse-
+;; string`'s second arg keywordizes every key straight from the parse,
+;; no separate Clojure-level tree walk. `walk-keys` below is used ONLY
+;; for a custom key-fn FUNCTION (rare: nothing in `jsonrpc4clj`/`lsp4clj`/
+;; clojure-lsp/clj-kondo passes one today, but cheshire's real contract
+;; allows it).
+;;
+;; Subset covered (the ones `jsonrpc4clj`/`lsp4clj`/clojure-lsp/clj-kondo
+;; actually call -- see PLAN.md's "grep for cheshire/json/" instruction):
+;; `generate-string` (`:pretty`), `parse-string`/`parse-string-strict`
+;; (arity-2 `key-fn`, `true` or a fn), `parse-stream`, `generate-stream`.
+;; NOT covered: `:key-fn` on `generate-string` (cheshire's own generator
+;; option for a custom key-encoding fn -- no measured call site passes it;
+;; every generator caller found pre-transforms keys itself, e.g.
+;; `jsonrpc4clj.io-chan`'s `cske/transform-keys` before calling
+;; `generate-string`), and cheshire's SMILE/custom-encoder machinery
+;; (`cheshire.custom`/`cheshire.generate`), which nothing in scope uses.
+
+(ns cheshire.core)
+
+(defn- transform-key
+  "cheshire's own `:key-fn` contract, for a CUSTOM function only --
+  `nil`/`true` never reach here (see `parse-string` below, which takes
+  the native fast path for both)."
+  [k key-fn]
+  (key-fn k))
+
+(defn- walk-keys
+  "Recursively applies a custom `key-fn` to every map key in `x` --
+  cheshire transforms keys at every nesting level, not just the top one."
+  [x key-fn]
+  (cond
+    (map? x) (into {} (map (fn [[k v]] [(transform-key k key-fn) (walk-keys v key-fn)]) x))
+    (vector? x) (mapv #(walk-keys % key-fn) x)
+    :else x))
+
+(defn parse-string
+  "cheshire.core/parse-string. `key-fn`:
+  - `nil` (1-arg form, or explicit `nil`): string keys, verbatim.
+  - `true`: NATIVE keywordization (`mova.json/parse-string`'s second
+    arg) -- no Clojure-level walk.
+  - a function: string keys from the native parse, then `walk-keys`
+    applies it (the one case that still needs a Clojure-level pass,
+    since a native call can't invoke an arbitrary mova closure per
+    key without crossing back into the evaluator anyway)."
+  ([s] (parse-string s nil))
+  ([s key-fn]
+   (cond
+     (nil? key-fn) (mova.json/parse-string s)
+     (true? key-fn) (mova.json/parse-string s true)
+     :else (walk-keys (mova.json/parse-string s) key-fn))))
+
+(defn parse-string-strict
+  "cheshire's \"strict\" parser (lazy-seq-free) -- mova has no lazy JSON
+  parse mode to begin with, so this is `parse-string` verbatim, same as
+  real cheshire's own doc note that the difference only matters for a
+  streaming/lazy JSON reader."
+  ([s] (parse-string s nil))
+  ([s key-fn] (parse-string s key-fn)))
+
+(defn generate-string
+  "cheshire.core/generate-string: `:pretty` is a native `serde_json`
+  flag (see this file's ns doc for why `:key-fn` isn't needed)."
+  ([obj] (generate-string obj {}))
+  ([obj opts]
+   (mova.json/generate-string obj (true? (:pretty opts)))))
+
+(defn- slurp-source
+  "`parse-stream`'s `rdr` is either a path/`java.io.File` string or an
+  already-open stream (`clojure.java.io/reader`'s result, a real
+  `HostKind::InputStream` -- review round 2) -- drain either into one
+  string."
+  [rdr]
+  (if (string? rdr)
+    (slurp rdr)
+    (loop [lines []]
+      (let [l (.readLine rdr)]
+        (if (nil? l)
+          (clojure.string/join "\n" lines)
+          (recur (conj lines l)))))))
+
+(defn parse-stream
+  ([rdr] (parse-stream rdr nil))
+  ([rdr key-fn] (parse-string (slurp-source rdr) key-fn)))
+
+(defn generate-stream
+  "cheshire.core/generate-stream: writes `(generate-string obj)` to
+  `writer` (a real, streaming `HostKind::OutputStream` -- review round
+  2) and returns `writer`, matching real cheshire's return value."
+  [obj writer]
+  (.write writer (generate-string obj))
+  writer)

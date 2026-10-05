@@ -1,0 +1,31 @@
+(ns lint.equals-pos
+  (:require [clojure.test :refer [deftest is testing]]))
+
+(defn f [x]
+  (= x 1)
+  (= 1 x)
+  (= x :a)
+  (= :a x)
+  (= x "s")
+  (= "s" x)
+  (= x nil)
+  (= nil x)
+  (= x 1 2)
+  (= 1 2)
+  (= x y)
+  (= x [1 2])
+  (= [1 2] x)
+  (= x {:a 1})
+  (= x 'q)
+  (= x true)
+  (= x #"re")
+  (= x \c)
+  (= x 1.5)
+  (clojure.core/= x 2))
+
+(deftest t
+  (is (= 1 (f 1)))
+  (is (= (f 1) 1))
+  (testing "x" (is (= (f 2) :a)))
+  (is (not= (f 1) 1))
+  (is (= (f 1) 1) "msg"))

@@ -1,0 +1,266 @@
+;; lsp/host (clojure-lsp-on-Mova campaign, mova/PLAN.md): a `promesa.core`
+;; shim covering EXACTLY the subset `jsonrpc4clj.server`, `lsp4clj.
+;; server`/`coercer`, and clojure-lsp's `cli/src/clojure_lsp/server.clj`
+;; actually call (grepped: `deferred`, `resolved`/`rejected` are used
+;; internally by this file itself; `catch`, `cancel!`, `done?`,
+;; `cancelled?`, `then`, `finally`, `resolve!`, `reject!`, `thread`,
+;; `thread-call`). NOT covered (no measured call site): `p/let`, `p/all`/
+;; `race`/`any`, `p/timeout`, `p/create`, the `->`/`->>`-oriented
+;; inverted-argument fns (`hcat`/`hmap`/`fnly`/`merr`), cljs-only bits.
+;;
+;; ## The primitive this is built on
+;;
+;; A promesa `Deferred` needs to be BOTH (a) something `clojure.core/
+;; deref` (bare, 1- or 3-arg) already knows how to block on, throw the
+;; rejection reason from, and time out on, AND (b) something that can
+;; register a pending CALLBACK (`then`/`catch`/`finally`) that fires
+;; later, atomically with settlement, from whichever thread happens to
+;; call `resolve!`/`reject!`.
+;;
+;; (a) is exactly what mova's OWN `Value::Future` already gives for free
+;; (`deref`'s `Value::Future` arm: `conc::future_deref`, real timeout
+;; support, re-throws on `Failed`) -- see `src/builtins/deferred.rs`
+;; (lsp/host branch)'s `mova.deferred/deferred`/`resolve!`/`reject!`
+;; (moved off bare `mova-deferred`/`mova-deferred-resolve!`/
+;; `mova-deferred-reject!` globals into that namespace this session), a
+;; small NEW native this campaign added because mova's `future*` always
+;; spawns its own computation thread and `promise` has no error channel;
+;; a promise/future ANY thread can settle by hand, with a success/
+;; failure distinction, didn't exist yet. So `(deferred)` below returns a
+;; bare `mova.deferred/deferred` value DIRECTLY -- not wrapped in a
+;; record -- specifically so that `jsonrpc4clj.server`'s own vendored
+;; `(deref [_] (deref p))`/`(deref [_ ms dv] (deref (resolve-ex-data p)
+;; ms dv))` (real Java `IDeref`/`IBlockingDeref` methods on ITS OWN
+;; `PendingRequest` record, calling bare `clojure.core/deref` on `p`,
+;; unmodified vendored code) hits mova's CORRECT native dispatch path
+;; instead of the known-broken one -- see this file's own NOTES.md entry:
+;; mova's generic `deref` on a user-defined `deftype`/`defrecord`
+;; instance (`Value::Inst`) always calls the SINGLE method registered
+;; under the name "deref" with exactly ONE arg (the receiver), even for
+;; the 3-arg `(deref x ms default)` form, so a `defrecord` implementing
+;; BOTH `clojure.lang.IDeref` (1-arg) and `clojure.lang.IBlockingDeref`
+;; (3-arg) under that name cannot get the 3-arg call routed/argued
+;; correctly through GENERIC `deref`. This shim's `Deferred` sidesteps
+;; that gap entirely by never being a `Value::Inst` in the first place.
+;;
+;; (b) -- the callback bookkeeping -- is deliberately NOT pushed into
+;; mova/Rust: it's ordinary Clojure data (an atom), guarded by
+;; `swap-vals!`'s atomic check-then-transition (the SAME race-free CAS
+;; pattern `jsonrpc4clj.server` ITSELF already relies on, e.g. `receive-
+;; response`'s `(swap-vals! pending-sent-requests* dissoc id)`), keyed by
+;; the deferred's OWN identity (mova's `Value::Future` compares/hashes by
+;; identity, measured -- two different ones are never `=`, so they're
+;; safe map keys). Known limitation, honestly not hidden: this registry
+;; is a process-lifetime map, entries are never removed once a deferred
+;; settles -- a real concern for a long-running language server, out of
+;; scope for this campaign's "get the real API loading and running"
+;; goal (see `mova/NOTES.md`).
+
+;; lsp/host: `:refer-clojure :exclude` for exactly the two names this shim
+;; redefines that collide with real `clojure.core` vars (`promise`,
+;; `resolve` -- see `(def promise? ...)`/`(defn promise ...)`/`(def resolve
+;; resolve!)` below). The real upstream `promesa.core` (`mova/vendor/
+;; promesa-12.0.0/promesa/core.cljc`) excludes these too (plus several more
+;; this shim never redefines), which is why real Clojure -- and mova, when
+;; the module path happens to resolve to the vendored file instead of this
+;; shim -- is silent; this shim's ns form had no such clause at all, so
+;; loading it warned `WARNING: promise already refers to: #'clojure.core/
+;; promise ...` (same for `resolve`) even though the shim is deliberately
+;; standing in for a namespace that legitimately owns those names.
+(ns promesa.core
+  (:refer-clojure :exclude [promise resolve])
+  (:require [mova.deferred :as md]))
+
+(def ^:private registry* (atom {}))
+
+(defn- init-state! [box]
+  (swap! registry* assoc box {:status :pending :callbacks [] :cancelled? false})
+  box)
+
+(defn deferred
+  "Creates an empty (pending) promise instance."
+  []
+  (init-state! (md/deferred)))
+
+(defn deferred?
+  [v]
+  (and (future? v) (contains? @registry* v)))
+
+(def promise? deferred?)
+
+(defn- fire-callbacks! [entry]
+  (doseq [f (:callbacks entry)]
+    (f entry)))
+
+;; The one atomic transition every settlement path (`settle!`, called by
+;; `resolve!`/`reject!`/`cancel!`/every `then`/`catch`/`finally` forwarder)
+;; goes through: `swap-vals!` on the WHOLE registry is one CAS, so either
+;; this call is the FIRST to see `:pending` (and therefore the only one
+;; that settles `box` for real and fires the callback list it just took
+;; over) or it sees an already-settled entry and does nothing further --
+;; no window where a `then`/`catch` registered concurrently with a
+;; settlement is lost (see `add-callback!`, the same pattern in reverse).
+(defn- settle! [box status value]
+  (let [[old new] (swap-vals! registry* update box
+                               (fn [s]
+                                 (if (= (:status s) :pending)
+                                   (assoc s :status status :value value)
+                                   s)))]
+    (when (= :pending (:status (get old box)))
+      (if (= status :rejected)
+        (md/reject! box value)
+        (md/resolve! box value))
+      (fire-callbacks! (get new box)))))
+
+(defn- add-callback! [box f]
+  (let [[_ new] (swap-vals! registry* update box
+                            (fn [s]
+                              (if (= (:status s) :pending)
+                                (update s :callbacks conj f)
+                                s)))
+        entry (get new box)]
+    (when-not (= :pending (:status entry))
+      (f entry))))
+
+(defn resolved
+  "Return a resolved promise with provided value."
+  [v]
+  (let [d (deferred)] (settle! d :resolved v) d))
+
+(defn rejected
+  "Return a rejected promise with provided reason."
+  [v]
+  (let [d (deferred)] (settle! d :rejected v) d))
+
+(defn promise
+  "The coerce-based promise constructor."
+  ([] (deferred))
+  ([v] (if (deferred? v) v (resolved v))))
+
+(def wrap promise)
+
+(defn resolved? [p] (= :resolved (:status (get @registry* p))))
+(defn rejected? [p] (= :rejected (:status (get @registry* p))))
+(defn pending? [p] (= :pending (:status (get @registry* p))))
+(defn done? [p] (not (pending? p)))
+
+;; --- Chaining
+
+(defn then
+  "Chains `f` to run when `p` resolves; returns a new promise resolved
+  with `f`'s return value (auto-unwrapped if `f` returns a promise
+  itself) or rejected with whatever `p` rejected with (propagated,
+  `f` never runs)."
+  ([p f] (then p f nil))
+  ([p f _executor]
+   (let [d (deferred)]
+     (add-callback!
+      p
+      (fn [{:keys [status value]}]
+        (if (= status :rejected)
+          (settle! d :rejected value)
+          (try
+            (let [r (f value)]
+              (if (deferred? r)
+                (add-callback! r (fn [{:keys [status value]}] (settle! d status value)))
+                (settle! d :resolved r)))
+            (catch Throwable e
+              (settle! d :rejected e))))))
+     d)))
+
+(defn catch
+  "Chains `f` to run when `p` rejects (optionally filtered by
+  `pred-or-type`, a predicate fn or a class); returns a new promise
+  resolved with `f`'s return value, or mirroring `p` if it resolved (or
+  rejected with a reason `pred-or-type` didn't accept)."
+  ([p f] (catch p nil f))
+  ([p pred-or-type f]
+   (let [accept? (cond
+                   (nil? pred-or-type) (constantly true)
+                   (fn? pred-or-type) pred-or-type
+                   :else (fn [e] (instance? pred-or-type e)))
+         d (deferred)]
+     (add-callback!
+      p
+      (fn [{:keys [status value]}]
+        (cond
+          (= status :resolved)
+          (settle! d :resolved value)
+
+          (accept? value)
+          (try
+            (let [r (f value)]
+              (if (deferred? r)
+                (add-callback! r (fn [{:keys [status value]}] (settle! d status value)))
+                (settle! d :resolved r)))
+            (catch Throwable e2
+              (settle! d :rejected e2)))
+
+          :else
+          (settle! d :rejected value))))
+     d)))
+
+(defn finally
+  "Runs `f` (as `(f value exception)`, mirroring real promesa/`.handle`
+  -- exactly one of the two is non-nil) when `p` settles either way;
+  returns a promise mirroring `p`'s own outcome regardless of what `f`
+  does (an exception `f` throws is swallowed, matching real promesa's
+  own documented behavior: `finally` is for side effects, not for
+  transforming the result)."
+  ([p f] (finally p f nil))
+  ([p f _executor]
+   (let [d (deferred)]
+     (add-callback!
+      p
+      (fn [{:keys [status value]}]
+        (try
+          (if (= status :rejected)
+            (f nil value)
+            (f value nil))
+          (catch Throwable _ nil))
+        (settle! d status value)))
+     d)))
+
+;; --- Cancellation
+
+(defn cancelled? [p]
+  (:cancelled? (get @registry* p) false))
+
+(defn cancel!
+  [p]
+  (swap! registry* update p assoc :cancelled? true)
+  (settle! p :rejected (java.util.concurrent.CancellationException.))
+  p)
+
+(def cancel cancel!)
+
+;; --- Completable
+
+(defn resolve!
+  ([o] (resolve! o nil))
+  ([o v] (settle! o :resolved v) o))
+
+(defn reject!
+  [p e]
+  (settle! p :rejected e)
+  p)
+
+(def resolve resolve!)
+(def reject reject!)
+
+;; --- Threads
+
+(defn thread-call
+  ([f] (thread-call nil f))
+  ([_executor f]
+   (let [d (deferred)]
+     (future
+       (try
+         (settle! d :resolved (f))
+         (catch Throwable e
+           (settle! d :rejected e))))
+     d)))
+
+(defmacro thread
+  [& body]
+  `(thread-call (fn [] ~@body)))

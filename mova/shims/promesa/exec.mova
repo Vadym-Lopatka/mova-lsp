@@ -1,0 +1,25 @@
+;; lsp/host (clojure-lsp-on-Mova campaign, mova/PLAN.md): `promesa.exec`
+;; shim covering the ONE grepped call site: `jsonrpc4clj.server`'s
+;; `(p.exec/submit! response-executor (fn [] ...))` -- runs the thunk on
+;; a thread that is NOT the caller's (matches the comment right above
+;; that call site: "we do not want the completing thread to be our
+;; thread"). `response-executor`'s VALUE is accepted but ignored (real
+;; promesa dispatches to a specific thread pool by keyword/executor
+;; object; mova has no executor-pool abstraction, so every call just
+;; gets a fresh real OS thread via `future` -- correct for "runs
+;; concurrently, off the calling thread", which is all any measured
+;; call site needs).
+
+(ns promesa.exec)
+
+;; MOVA-PATCH (shim): server.clj memoizes this as its "changes-executor" and
+;; passes it into p/thread-call, which (per this shim's promesa.core) ignores
+;; the executor arg and always runs on a fresh real thread -- placeholder.
+(defn forkjoin-executor
+  ([] :forkjoin)
+  ([_opts] :forkjoin))
+
+(defn submit!
+  ([f] (submit! :default f))
+  ([_executor f]
+   (future (f))))

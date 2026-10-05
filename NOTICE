@@ -1,0 +1,46 @@
+nx (mova-lsp)
+
+Original work
+  Everything under nx/ and mova/ is copyright the mova authors and is
+  licensed under the Eclipse Public License 1.0 (see LICENSE), except the
+  derived files listed below.
+
+Derived works under mova/overlay
+  These files are modified copies (ported to Mova) of other projects.
+  They keep the license of the project they come from.
+
+  - mova/overlay/clojure_lsp/**, mova/overlay/jsonrpc4clj/**
+      from clojure-lsp (https://github.com/clojure-lsp/clojure-lsp) and its
+      lsp4clj library. Copyright the clojure-lsp maintainers. MIT
+      (see LICENSE-MIT).
+  - mova/overlay/clj_kondo/**
+      from clj-kondo (https://github.com/clj-kondo/clj-kondo).
+      Copyright the clj-kondo authors. EPL-1.0.
+  - mova/overlay/rewrite_clj/**
+      from rewrite-clj (https://github.com/clj-commons/rewrite-clj).
+      Copyright the rewrite-clj authors. MIT.
+  - mova/overlay/medley/core.mova
+      from medley (https://github.com/weavejester/medley).
+      Copyright the medley authors. EPL-1.0.
+  - mova/overlay/clojure/core/memoize.mova
+      from core.memoize. Copyright Rich Hickey and Michael Fogus. EPL-1.0.
+  - mova/overlay/clojure/data/priority_map.mova
+      from data.priority-map. Copyright Mark Engelberg, Rich Hickey and
+      contributors. EPL-1.0.
+  - mova/overlay/clojure/java/classpath.mova
+      from java.classpath. Copyright Rich Hickey, Stuart Sierra and
+      contributors. EPL-1.0.
+
+  The files under mova/shims are new code written to match the public
+  API of the libraries named by their paths (promesa, sci, cheshire,
+  transit, timbre, babashka.fs, clojure.edn and others). They are not
+  copies of those libraries.
+
+Files from clojure-lsp
+  All other files in this repository (everything outside nx/ and mova/,
+  plus LICENSE-MIT) come from clojure-lsp
+  (https://github.com/clojure-lsp/clojure-lsp) at commit
+  8ad65c1d681d2fc9022b3854f6dcaf1677d29631. They are copyright the
+  clojure-lsp maintainers, licensed under the MIT License (see
+  LICENSE-MIT), and are unmodified. This repository has its own README.md
+  and does not carry the upstream .github/ directory.

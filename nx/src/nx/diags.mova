@@ -1,0 +1,84 @@
+;; Publishes real diagnostics for open docs (deduped per uri; commits older than the open version are dropped) and,
+;; once after the startup pass, for every project file with findings (JVM `:lint-project-files-after-startup?`).
+(ns nx.diags)
+
+(defn publish [uri diagnostics]
+  {:jsonrpc "2.0" :method "textDocument/publishDiagnostics"
+   :params {:uri uri :diagnostics diagnostics}})
+
+(defn on-open
+  "[state' msgs] for an :open event ({:uri :version} or {:uri :closed})."
+  [s {:keys [uri version closed]}]
+  (if closed
+    [(-> s (update :open dissoc uri) (update :pub dissoc uri)) [(publish uri [])]]
+    [(-> s (assoc-in [:open uri] version) (update :pub dissoc uri)) []]))   ; an open/change always republishes (JVM)
+
+(defn startup-lint
+  "[state' msgs]: non-empty diagnostics of all project files, once, when the startup batch completes."
+  [s snap progress]
+  (if (and progress (not (:startup-lint? s)) (>= (:done progress) (:total progress)))
+    (reduce (fn [[s out] {:keys [uri diagnostics]}]
+              (if (= diagnostics (get (:pub s) uri ::none))
+                [s out]
+                [(assoc-in s [:pub uri] diagnostics) (conj out (publish uri diagnostics))]))
+            [(assoc s :startup-lint? true) []]
+            (mova.nx/project-diagnostics snap))
+    [s []]))
+
+;; watched files (JVM analyze-watched-files! / files-deleted): diagnostics of the changed files AND of their reference files
+;; are published even when empty, once the disk analysis is committed (created/changed) or at once (deleted).
+(defn publish-uris [s snap uris]
+  (reduce (fn [[s out] uri]
+            (let [ds (mova.nx/diagnostics snap uri)]
+              [(assoc-in s [:pub uri] ds) (conj out (publish uri ds))]))
+          [s []] uris))
+
+(defn on-watch
+  "[state' msgs] for {:queued [uri] :deleted [uri] :refs [uri]}."
+  [s {:keys [queued deleted refs]}]
+  (let [s (update s :watching into queued)
+        s (reduce #(update %1 :pub dissoc %2) s deleted)
+        [s out] (publish-uris s (mova.nx/snapshot (:eng s)) refs)]
+    [s (into (mapv #(publish % []) deleted) out)]))
+
+(defn on-disk-committed
+  "[state' msgs]: committed disk entries we were waiting for -> their diagnostics + their reference files'."
+  [s snap disk]
+  (let [done (filter #(contains? (:watching s) %) disk)]
+    (if (seq done)
+      (let [s (update s :watching #(reduce disj % done))
+            uris (vec (distinct (concat done (mapcat #(mova.nx/reference-uris snap %) done))))]
+        (publish-uris s snap uris))
+      [s []])))
+
+(defn on-committed
+  "[state' out-msgs progress-msgs] for {:snap :changed :disk :progress}. Re-evaluates every open doc (built-in diagnostics
+   depend on other files), publishes the ones that changed, then forwards progress."
+  [s {:keys [snap progress disk]}]
+  (let [[s wout] (if (seq disk) (on-disk-committed s snap disk) [s []])
+        [s out] (reduce (fn [[s out] [uri ov]]
+                          (let [ev (mova.nx/entry-version snap uri)]
+                            (if (or (nil? ev) (< ev ov))
+                              [s out]                       ; not analyzed yet / stale
+                              (let [ds (mova.nx/diagnostics snap uri)]
+                                (if (= ds (get (:pub s) uri ::none))
+                                  [s out]                   ; unchanged
+                                  [(assoc-in s [:pub uri] ds) (conj out (publish uri ds))])))))
+                        [s []] (:open s))]
+    (let [[s out2] (startup-lint s snap progress)]
+      [s (-> wout (into out) (into out2)) (if progress [progress] [])])))
+
+(defn diags-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:open {} :committed {} :watched {}} :outs {:out {} :progress {}}})
+    :init (fn [_] {:open {} :pub {} :watching #{} :eng (mova.nx/engine)})
+    :transform (fn [s in-id msg]
+                 (case in-id
+                   :open
+                   (let [[s out] (on-open s msg)]
+                     [s (if (seq out) {:out out} {})])
+                   :watched
+                   (let [[s out] (on-watch s msg)]
+                     [s (if (seq out) {:out out} {})])
+                   (let [[s out prog] (on-committed s msg)]
+                     [s (cond-> {} (seq out) (assoc :out out) (seq prog) (assoc :progress prog))])))}))

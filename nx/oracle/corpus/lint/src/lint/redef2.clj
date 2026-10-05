@@ -1,0 +1,25 @@
+(ns lint.redef2
+  (:refer-clojure :exclude [filter])
+  (:require [lint.helper :refer [pub two]]
+            [clojure.string :refer [join]]
+            [clojure.set :as set]))
+
+(defn pub [x] x)
+(defn two [x] x)
+(defn join [x] x)
+(defn filter [x] x)
+(defn set [x] x)
+(defn set/union [x] x)
+(def map 1)
+(defn first [x] x)
+(defn rest [x] x)
+(defmulti first identity)
+(defprotocol Proto (count [x]))
+(defrecord Rec [conj])
+(deftype Ty [a] Proto (count [_] 1))
+(defn f [vec] vec)
+(def f 1)
+(def ^:redef g 1)
+(def ^:redef g 2)
+(def ^{:clj-kondo/ignore [:redefined-var]} h 1)
+(def h 2)

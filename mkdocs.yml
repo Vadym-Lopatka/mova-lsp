@@ -1,0 +1,65 @@
+site_name: Clojure LSP
+site_description: Language Server Protocol Implementation for Clojure
+site_url: https://clojure-lsp.io
+
+repo_name: clojure-lsp/clojure-lsp
+repo_url: https://github.com/clojure-lsp/clojure-lsp
+
+nav:
+  - Home:
+    - Overview: README.md
+    - Settings: settings.md
+    - Clients (Editors): clients.md
+    - Building: building.md
+    - Development: development.md
+    - Troubleshooting: troubleshooting.md
+    - Capabilities: capabilities.md
+  - Features: features.md
+  - Installation: installation.md
+  - Outside editor (API):
+    - What is clojure-lsp API?:  api/what-is-it.md
+    - API (JVM): api/api.md
+    - CLI: api/cli.md
+    - CI: api/ci.md
+    - Lein plugin: api/lein-plugin.md
+    - Babashka pod: api/bb-pod.md
+  - Support Us: https://github.com/sponsors/clojure-lsp
+  - Changelog: CHANGELOG.md
+
+theme:
+  name: material
+  logo: images/logo-light.svg
+  favicon: images/logo-light.svg
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+
+extra:
+  social:
+    - icon: fontawesome/brands/github-alt
+      link: https://github.com/clojure-lsp/clojure-lsp
+    - icon: fontawesome/brands/slack
+      link: https://clojurians.slack.com/archives/CPABC1H61
+
+extra_css:
+  - stylesheets/layout.css
+
+markdown_extensions:
+  - pymdownx.superfences
+  - codehilite
+  - meta
+  - toc:
+      permalink: '#'
+  - pymdownx.emoji:
+      emoji_index: !!python/name:materialx.emoji.twemoji
+      emoji_generator: !!python/name:materialx.emoji.to_svg
+
+plugins:
+  - search
+  - awesome-pages
+  - git-revision-date-localized
+
+google_analytics:
+  - UA-189476519-1
+  - auto

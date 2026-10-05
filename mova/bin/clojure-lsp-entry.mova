@@ -1,0 +1,5 @@
+;; mova/bin/clojure-lsp's entry point -- Mova has no gen-class -main dispatch,
+;; so this just requires clojure-lsp.main and applies its -main to the
+;; process argv (Mova's *command-line-args*, bound by `mova` for file mode).
+(require 'clojure-lsp.main)
+(apply clojure-lsp.main/-main *command-line-args*)

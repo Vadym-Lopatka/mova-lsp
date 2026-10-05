@@ -1,0 +1,83 @@
+(ns nx.main
+  (:require [nx.core.obs :as obs] [nx.graph :as graph]))
+
+;; Metrics (NX_METRICS=1). The edges are one native call each (mova.nx/tap-in!, tap-out!); the
+;; buffers, the flag and the coalesced bell live in Rust (mova nx_tap.rs). Main is the only metrics thread:
+;;   flag = 0 main parked on the bell | 1 main in its tick timer, no tap since the last tick | 2 marked by a tap.
+;; Main, once rung, sleeps tick-ms at a time and touches the taps only after a tick that saw none (client quiet).
+;; A full buffer drops and counts; nothing makes main work beside traffic.
+(def ^:private tick-ms 100)
+(def ^:private exit-drain-ns 150000000)                    ; exit: fold what is pending for at most 150 ms
+
+(defn- on?
+  "Metrics are off by default; NX_METRICS=1 turns them on (the Mova binary must have the native tap and stats)."
+  []
+  (and (= "1" (System/getenv "NX_METRICS")) (some? (resolve 'mova.nx/met-take!))))
+
+(defn- flow-error [e]
+  (try (mova.io/write-str System/err (str "nx flow error: " (pr-str (obs/flow->msg e)) "\n"))
+       (mova.io/flush System/err)
+       (catch Exception _ nil)))
+
+(defn- run-off
+  "Metrics off: main parks on the error tap; the writer proc exits the process."
+  []
+  (let [fl (graph/build {})
+        {:keys [error-chan]} (flow/start fl)]
+    (flow/resume fl)
+    (loop []
+      (when-let [e (<!! error-chan)]
+        (flow-error e)
+        (recur)))))
+
+(defn- met-load
+  "nx.metrics, loaded at run time so start pays nothing for it: {:m state + its fns}. nil when it will not load."
+  [since-ms]
+  (try (require 'nx.metrics)
+       (let [f (fn [n] @(resolve (symbol "nx.metrics" n)))]
+         {:m ((f "start") since-ms) :quiet (f "quiet") :idle (f "idle") :error (f "error") :wait-ms (f "wait-ms")
+          :finish (f "finish") :procs (f "procs")})
+       (catch Exception _ nil)))
+
+(defn- met-call
+  "mt' after one nx.metrics step. nil once a step threw: metrics stop for good (the edges then drop and count)."
+  [mt k & args]
+  (when mt
+    (try (assoc mt :m (apply (get mt k) (:m mt) args))
+         (catch Exception _ nil))))
+
+(defn- run-on
+  "Metrics on: main owns exit, folds the edge taps when the client is quiet and writes the session file."
+  []
+  (let [since-ms (System/currentTimeMillis)
+        exit-ch (chan 1)                                   ; writer -> main, lossless: main owns process exit
+        bell (chan (sliding-buffer 1))
+        _ (mova.nx/tap-init! bell)
+        fl (graph/build {:exit-ch exit-ch :met true})
+        {:keys [error-chan]} (flow/start fl)
+        base [exit-ch error-chan bell]
+        loaded (fn [mt] (if (= mt ::unloaded) (met-load since-ms) mt))]
+    (flow/resume fl)
+    ;; main parks here. Exit first, then flow errors, then the bell, then a timer: the tick while traffic is on,
+    ;; else the wait for the next session-file write (no timer when nothing is unwritten).
+    (loop [mt ::unloaded ticking? false]
+      (let [wait (when (and (not ticking?) (map? mt)) ((:wait-ms mt) (:m mt)))
+            [v ch] (alts!! (cond ticking? (conj base (timeout tick-ms))
+                                 wait (conj base (timeout wait))
+                                 :else base)
+                           :priority true)]
+        (cond
+          (= ch exit-ch) (do (met-call (loaded mt) :finish (+ (System/nanoTime) exit-drain-ns))
+                             (System/exit v))
+          (= ch error-chan) (when v
+                              (flow-error v)
+                              (recur (met-call (loaded mt) :error v) ticking?))
+          (= ch bell) (do (when-not ticking? (mova.nx/tap-flag! 1))             ; first tap: start the tick, fold nothing
+                          (recur mt true))
+          (not ticking?) (recur (met-call mt :idle) false)                       ; parked: the file write is due
+          (mova.nx/tap-flag! 2 1) (recur mt true)                                ; a tap during the last tick: wait
+          :else (let [mt (met-call (met-call (loaded mt) :quiet) :procs fl)]     ; quiet: fold, then park if still quiet
+                  (recur mt (not (mova.nx/tap-flag! 1 0)))))))))
+
+(defn -main [& _args]
+  (if (on?) (run-on) (run-off)))

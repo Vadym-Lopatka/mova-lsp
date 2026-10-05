@@ -1,0 +1,99 @@
+;; Background planner: on initialize+initialized, discover the project (source paths only, no classpath),
+;; queue every file at low priority, and report $/progress exactly like clojure-lsp startup (token from
+;; initialize.workDoneToken; titles/percentages from startup.clj fast-tasks; analyzing = lerp 20..98).
+(ns nx.bg)
+
+(defn progress [token kind title pct]
+  {:jsonrpc "2.0" :method "$/progress"
+   :params {:token token
+            :value (cond-> {:kind kind}
+                     title (assoc (if (= kind "begin") :title :message) title)
+                     pct (assoc :percentage pct))}})
+
+(defn- p [s title pct]
+  (if-let [t (:token s)] [(progress t "report" title pct)] []))
+
+(def ^:private analyzing "Analyzing project files")
+
+(defn start-msgs
+  "Progress messages before the file pass (JVM: fast-tasks up to :analyzing-project)."
+  [token]
+  (if token
+    [(progress token "begin" "clojure-lsp" 0)
+     (progress token "report" "Finding kondo config" 5)
+     (progress token "report" "Finding cache" 10)
+     (progress token "report" "Copying kondo configs" 15)
+     (progress token "report" "Resolving config paths" 15)
+     (progress token "report" analyzing 20)]
+    []))
+
+(defn end-msgs
+  "99 Project analyzed, post-startup tasks (message only), then end with Done."
+  [token]
+  (if token
+    [(progress token "report" "Project analyzed" 99)
+     (progress token "report" "Fetching Clojuredocs" nil)
+     (progress token "report" "Analyzing JDK source" nil)
+     {:jsonrpc "2.0" :method "$/progress"
+      :params {:token token :value {:kind "end" :message "Done"}}}]
+    []))
+
+(defn pct-of [done total]
+  (+ 20 (quot (* 78 done) (max total 1))))
+
+(defn on-progress
+  "[state' msgs] for {:batch :done :total}."
+  [{:keys [batch token last-pct] :as s} {b :batch done :done total :total}]
+  (cond
+    (not= b batch) [s []]
+    (>= done total) [(assoc s :batch nil :settled? true)
+                     (if token (into [(progress token "report" analyzing 98)] (end-msgs token)) [])]
+    :else
+    (let [pc (pct-of done total)]
+      (if (or (nil? token) (= pc last-pct))
+        [s []]
+        [(assoc s :last-pct pc) (p s analyzing pc)]))))
+
+(defn try-start
+  "Starts the pass once both initialize and initialized arrived. Blocking fs discovery: runs on the :io thread."
+  [{:keys [init initialized? started? eng] :as s}]
+  (if (and init initialized? (not started?))
+    (let [s (assoc s :started? true :token (:token init))]
+      (if-let [root (:root init)]
+        (let [pre (start-msgs (:token s))
+              {:keys [batch total]} (mova.nx/analyze-project eng root)
+              s (assoc s :batch batch :last-pct 20)]
+          (if (zero? total)
+            [(assoc s :batch nil :settled? true) (into pre (end-msgs (:token s)))]
+            [s pre]))
+        [(assoc s :settled? true) []]))       ; no root: nothing to analyze
+    [s []]))
+
+;; JVM `initialized`: when the client can watch files, ask it to (same registration as clojure-lsp).
+(def register-watchers
+  {:jsonrpc "2.0" :id 1 :method "client/registerCapability"
+   :params {:registrations [{:id "id" :method "workspace/didChangeWatchedFiles"
+                             :registerOptions {:watchers [{:globPattern "**/*.{clj,cljs,cljc,cljd,edn,bb,clj_kondo,mova}"}]}}]}})
+
+(defn with-registration
+  "[state' out] adding the watcher registration once both initialize and initialized arrived."
+  [{:keys [init initialized? reg-sent?] :as s} out]
+  (if (and init initialized? (not reg-sent?) (:watch? init))
+    [(assoc s :reg-sent? true) (into [register-watchers] out)]
+    [s out]))
+
+(defn bg-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:init {} :initialized {} :progress {}} :outs {:out {} :settled {}}})
+    :init (fn [_] {:eng (mova.nx/engine)})
+    :transform (fn [s in-id msg]
+                 (let [[s out] (apply with-registration
+                                       (case in-id
+                                         :init (try-start (assoc s :init msg))
+                                         :initialized (try-start (assoc s :initialized? true))
+                                         :progress (on-progress s msg)))
+                       ;; tell `query` once that the project pass is over (parked requests are released)
+                       [s settled] (if (and (:settled? s) (not (:settled-sent? s)))
+                                     [(assoc s :settled-sent? true) [true]]
+                                     [s []])]
+                   [s (cond-> {} (seq out) (assoc :out out) (seq settled) (assoc :settled settled))]))}))

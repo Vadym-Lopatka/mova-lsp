@@ -1,0 +1,44 @@
+;; MOVA-PATCH (shim): taoensso.timbre -- clojure-lsp uses only a thin slice
+;; (log!, merge-config!, spit-appender, get-hostname,
+;; handle-uncaught-jvm-exceptions!). Real timbre pulls in taoensso.encore
+;; (heavy, slows startup); this shim reimplements just enough to spit
+;; timestamped log lines to the configured file appender, no encore.
+(ns taoensso.timbre)
+
+(def ^:private log-config* (atom {:appenders {}}))
+
+(defn merge-config! [config]
+  (swap! log-config* (fn [old] (merge-with merge old config))))
+
+(defn get-hostname [] "localhost")
+
+(defn handle-uncaught-jvm-exceptions! [] nil)
+
+(defn spit-appender [{:keys [fname]}]
+  {:enabled? true
+   :fn (fn [{:keys [output_]}]
+         (spit fname (str (force output_) "\n") :append true))})
+
+(defn ^:private level->str [level] (clojure.string/upper-case (name level)))
+
+(defn ^:private format-log-line [level ?ns-str ?file ?line args]
+  (str "[" (System/currentTimeMillis) "] " (level->str level) " "
+       "[" (or ?ns-str ?file "?") ":" (or ?line "?") "] "
+       (clojure.string/join " " (map str args))))
+
+(defn log!
+  ([level msg-type args] (log! level msg-type args nil))
+  ([level msg-type args opts]
+   (let [{:keys [?ns-str ?file ?line]} opts
+         line (format-log-line level ?ns-str ?file ?line args)
+         data {:level level :msg-type msg-type :args args
+               :output_ (delay line)}]
+     (doseq [[_id appender] (:appenders @log-config*)]
+       (when (:enabled? appender true)
+         ((:fn appender) data)))
+     nil)))
+
+(defn warn [& args] (log! :warn :p args))
+(defn info [& args] (log! :info :p args))
+(defn error [& args] (log! :error :p args))
+(defn debug [& args] (log! :debug :p args))

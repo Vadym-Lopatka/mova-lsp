@@ -1,0 +1,25 @@
+;; Classify messages. requests + lifecycle -> :req, $/cancelRequest -> :cancel, doc sync -> :notif.
+(ns nx.router
+  (:require [clojure.string :as str]))
+
+(defn classify [msg]
+  (let [m (:method msg)]
+    (cond
+      (nil? m) (when (and (string? (:id msg)) (str/starts-with? (:id msg) "nx-")) :req) ; response to a server request (applyEdit): query owns it; others dropped
+      (= m "$/cancelRequest") :cancel
+      (= m "initialized") :lifecycle
+      (= m "exit") :req
+      (contains? #{"clojure/serverInfo/log" "clojure/cursorInfo/log"} m) :req   ; JVM notifications: answered with window/showMessage
+      (contains? msg :id) :req
+      (str/starts-with? m "textDocument/did") :notif
+      (= m "workspace/didChangeWatchedFiles") :watched
+      :else nil)))                                   ; $/setTrace, workspace/*: ignored
+
+(defn router-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {}} :outs {:req {} :cancel {} :notif {} :lifecycle {} :watched {}}})
+    :transform (fn [s _ msg]
+                 (if-let [lane (classify msg)]
+                   ;; doc sync also rides the request lane so `query` sees versions in order with the requests
+                   [s (if (= lane :notif) {:notif [msg] :req [msg]} {lane [msg]})]
+                   [s {}]))}))

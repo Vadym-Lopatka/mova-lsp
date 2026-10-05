@@ -1,0 +1,319 @@
+;; Request owner: lifecycle phase + cancel set. Unknown requests -> -32601 (as JVM lsp4clj).
+(ns nx.query
+  (:require [clojure.string :as str] [nx.caps :as caps]))
+
+(defn- ok [id result] {:jsonrpc "2.0" :id id :result result})
+(defn- err [id code msg] {:jsonrpc "2.0" :id id :error {:code code :message msg}})
+
+(def ^:private max-cancelled 1000)
+
+(def ^:private jvm-requests
+  "Request methods JVM clojure-lsp (lsp4clj) registers; any other method gets -32601 (notifications sent as requests too)."
+  #{"callHierarchy/incomingCalls" "callHierarchy/outgoingCalls" "clojure/clojuredocs/raw" "clojure/cursorInfo/raw"
+    "clojure/dependencyContents" "clojure/serverInfo/raw" "clojure/workspace/projectTree/nodes" "codeLens/resolve"
+    "completionItem/resolve" "initialize" "shutdown" "textDocument/codeAction" "textDocument/codeLens"
+    "textDocument/completion" "textDocument/declaration" "textDocument/definition" "textDocument/documentHighlight"
+    "textDocument/documentSymbol" "textDocument/foldingRange" "textDocument/formatting" "textDocument/hover"
+    "textDocument/implementation" "textDocument/linkedEditingRange" "textDocument/prepareCallHierarchy"
+    "textDocument/prepareRename" "textDocument/rangeFormatting" "textDocument/references" "textDocument/rename"
+    "textDocument/selectionRange" "textDocument/semanticTokens/full" "textDocument/semanticTokens/range"
+    "textDocument/signatureHelp" "workspace/executeCommand" "workspace/symbol" "workspace/willRenameFiles"})
+
+(defn- method-not-found [id method]
+  {:jsonrpc "2.0" :id id :error {:code -32601 :message "Method not found" :data {:method method}}})
+
+(def ^:private native-methods
+  {"textDocument/definition" "definition"
+   "textDocument/declaration" "declaration"
+   "textDocument/references" "references"
+   "textDocument/documentHighlight" "documentHighlight"
+   "textDocument/hover" "hover"
+   "textDocument/documentSymbol" "documentSymbol"
+   "textDocument/completion" "completion"
+   "textDocument/semanticTokens/full" "semanticTokensFull"
+   "textDocument/foldingRange" "foldingRange"
+   "textDocument/selectionRange" "selectionRange"
+   "textDocument/linkedEditingRange" "linkedEditingRange"
+   "textDocument/codeLens" "codeLens"
+   "textDocument/prepareRename" "prepareRename"
+   "textDocument/rename" "rename"
+   "textDocument/implementation" "implementation"
+   "textDocument/prepareCallHierarchy" "prepareCallHierarchy"
+   "callHierarchy/incomingCalls" "callHierarchyIncoming"
+   "callHierarchy/outgoingCalls" "callHierarchyOutgoing"
+   "workspace/symbol" "workspaceSymbol"
+   "textDocument/signatureHelp" "signatureHelp"
+   "clojure/dependencyContents" "dependencyContents"
+   "clojure/cursorInfo/raw" "cursorInfo"})
+
+(def ^:private native-n-methods
+  "Methods answered by `mova.nx/query-n`: name + (params -> [uri ints])."
+  {"textDocument/semanticTokens/range"
+   ["semanticTokensRange"
+    (fn [p] [(get-in p [:textDocument :uri]) [(get-in p [:range :start :line]) (get-in p [:range :end :line])]])]
+   "textDocument/formatting" ["formatting" (fn [p] [(get-in p [:textDocument :uri]) []])]
+   "textDocument/rangeFormatting"
+   ["rangeFormatting"
+    (fn [p] [(get-in p [:textDocument :uri])
+             [(get-in p [:range :start :line]) (get-in p [:range :start :character])
+              (get-in p [:range :end :line]) (get-in p [:range :end :character])]])]
+   "codeLens/resolve"
+   ["codeLensResolve"
+    (fn [p] (let [[uri row col] (:data p) r (:range p)]
+              [uri [row col (get-in r [:start :line]) (get-in r [:start :character]) (get-in r [:end :line]) (get-in r [:end :character])]]))]})
+
+(defn- client-options!
+  "Hands the answer-shaping client options of `initialize` to the native engine."
+  [eng params]
+  (let [we (get-in params [:capabilities :workspace :workspaceEdit])
+        _ (mova.nx/client-caps eng (boolean (:documentChanges we)) (some? (:resourceOperations we)) (some? (:changeAnnotationSupport we)))
+        io (:initializationOptions params)
+        hover (:hover io)
+        fmts (get-in params [:capabilities :textDocument :hover :contentFormat])]
+    (mova.nx/client-options eng
+                            (= "jar" (:dependency-scheme io))
+                            (boolean (some #{"markdown"} fmts))
+                            (boolean (or (:arity-on-same-line? hover) (:show-docs-arity-on-same-line? io)))
+                            (boolean (:hide-file-location? hover))
+                            (boolean (:hide-signature-call? hover)))
+    (mova.nx/clojuredocs eng (:rootUri params) (:clojuredocs hover))
+    ;; completion: what the client resolves lazily (else alias edits are inlined, documentation omitted)
+    (let [ci (get-in params [:capabilities :textDocument :completion :completionItem])
+          props (set (get-in ci [:resolveSupport :properties]))]
+      (mova.nx/completion-options eng
+                                  (contains? props "documentation")
+                                  (contains? props "additionalTextEdits")
+                                  (boolean (some #{"markdown"} (:documentationFormat ci)))
+                                  (boolean (:snippetSupport ci))
+                                  (boolean (:use-metadata-for-privacy? io))
+                                  (vec (keep (fn [m] (when (and (:name m) (:snippet m)) [(:name m) (:detail m) (:snippet m)]))
+                                             (:additional-snippets io)))))))
+
+(defn- native-query
+  "Raw response frame from the native query on the current snapshot, or nil when not native."
+  [eng native id params]
+  (let [item (:item params)
+        pos (or (:position params) (first (:positions params)) (get-in item [:range :start]))]
+    (mova.nx/query (mova.nx/snapshot eng) id native
+                   (or (get-in params [:textDocument :uri]) (:uri item) (:uri params) "") (:line pos) (:character pos)
+                   (boolean (get-in params [:context :includeDeclaration]))
+                   (or (:newName params) (:query params) ""))))
+
+(def ^:private waits-for-changes
+  "Methods that wait for in-flight document changes (JVM process-after-changes)."
+  #{"textDocument/documentSymbol" "textDocument/documentHighlight" "textDocument/completion"
+    "textDocument/semanticTokens/full" "textDocument/semanticTokens/range" "textDocument/linkedEditingRange"
+    "textDocument/codeLens" "textDocument/formatting" "textDocument/rangeFormatting"
+    "textDocument/prepareRename" "textDocument/prepareCallHierarchy" "textDocument/codeAction"})
+
+(def ^:private awaits-analysis
+  "Methods parked while the project pass runs when the answer is still empty (JVM await-analysis)."
+  #{"textDocument/definition" "textDocument/references" "textDocument/hover"})
+
+(defn- empty-frame? [raw]
+  (or (str/ends-with? raw "\"result\":null}")
+      (str/ends-with? raw "\"result\":[]}")
+      (str/ends-with? raw "\"result\":{\"contents\":[]}}")))
+
+(defn- stale?
+  "True when the doc has a newer version than the analysis in the current snapshot."
+  [{:keys [eng versions]} {:keys [method params]}]
+  (and (contains? waits-for-changes method)
+       (let [uri (get-in params [:textDocument :uri])
+             want (get versions uri)
+             have (when want (mova.nx/entry-version (mova.nx/snapshot eng) uri))]
+         (and want (or (nil? have) (< have want))))))
+
+(declare release)
+
+(defn- show-info
+  "JVM producer/show-message at :info level (server-info / cursor-info logs)."
+  [text]
+  {:jsonrpc "2.0" :method "window/showMessage" :params {:type 3 :message text :extra nil}})
+
+(defn- exec-params
+  "JSON text handed to the native executeCommand: command + arguments, workspaceEdit capabilities, settings, answers so far."
+  [s params answers]
+  (mova.json/generate-string
+   {:command (:command params) :arguments (:arguments params)
+    :caps (:ws-caps s) :settings (:settings s) :init (:init-opts s) :answers answers
+    ;; JVM `documents uri :v`: set by didChange only (0 otherwise)
+    :version (get-in s [:chg (first (:arguments params))] 0)}
+   false))
+
+(defn- exec-command
+  "workspace/executeCommand: native refactoring -> `workspace/applyEdit` server request (answered later by the client,
+  then showDocument + the command response), or a `window/showMessageRequest` question (re-run with the answer),
+  or an immediate error/null response."
+  ([s id params] (exec-command s id params []))
+  ([{:keys [eng] :as s} id params answers]
+   (let [raw (mova.nx/query-j (mova.nx/snapshot eng) id "executeCommand" (exec-params s params answers))
+         res (when raw (:result (mova.json/parse-string raw true)))]
+     (cond
+       (nil? res) [s [(ok id nil)]]
+       (:error res) [s (cond-> []
+                         (:message res) (conj {:jsonrpc "2.0" :method "window/showMessage" :params {:type 1 :message (:message res)}})
+                         true (conj (cond-> (err id (get-in res [:error :code]) (get-in res [:error :message]))
+                                      ;; JVM lsp4clj: internal error carries the request id + method
+                                      (= -32603 (get-in res [:error :code])) (assoc-in [:error :data] {:id id :method "workspace/executeCommand"}))))]
+       (:info res) [s [(show-info (:info res)) (ok id nil)]]
+       (:write res) (do (mova.io/make-parents (get-in res [:write :path])) (spit (get-in res [:write :path]) (get-in res [:write :content])) [s [(ok id nil)]])
+       (:ask res) (let [rid (str "nx-" (:rid s))]
+                    [(-> s (update :rid inc) (assoc-in [:pending rid] {:ask {:id id :params params :answers answers}}))
+                     [{:jsonrpc "2.0" :id rid :method "window/showMessageRequest"
+                       :params {:type 3 :message (get-in res [:ask :message])
+                                :actions (mapv (fn [t] {:title t}) (get-in res [:ask :actions]))}}]])
+       ;; JVM drops the applyEdit request when an edit has a nil range (coercion failure) but still answers with the edit
+       (and (:edit res) (some (fn [d] (some #(nil? (:range %)) (:edits d))) (:documentChanges (:edit res))))
+       [s [(ok id (:edit res))]]
+       (:edit res) (let [rid (str "nx-" (:rid s))]
+                     [(-> s (update :rid inc) (assoc-in [:pending rid] {:id id :edit (:edit res) :show (:show res)}))
+                      [{:jsonrpc "2.0" :id rid :method "workspace/applyEdit" :params {:edit (:edit res)}}]])
+       (:show res) [(update s :rid inc)
+                    [{:jsonrpc "2.0" :id (str "nx-" (:rid s)) :method "window/showDocument" :params (:show res)}
+                     (ok id nil)]]
+       :else [s [(ok id nil)]]))))
+
+(defn- client-response
+  "Client answered one of our server requests: a question (re-run the command with the answer) or `workspace/applyEdit`
+  (show the document, then answer the command with the edit)."
+  [s rid msg]
+  (let [{:keys [id edit show ask]} (get-in s [:pending rid])
+        s (update s :pending dissoc rid)]
+    (if ask
+      (exec-command s (:id ask) (:params ask) (conj (:answers ask) (get-in msg [:result :title])))
+      [(update s :rid inc)
+       (cond-> []
+         show (conj {:jsonrpc "2.0" :id (str "nx-" (:rid s)) :method "window/showDocument" :params show})
+         true (conj (ok id edit)))])))
+
+(defn- code-action-params
+  "JSON text handed to the native codeAction: request range, context diagnostics, workspaceEdit capability."
+  [s params]
+  (let [{:keys [start end]} (:range params)]
+    (mova.json/generate-string
+     {:uri (get-in params [:textDocument :uri])
+      :start [(:line start) (:character start)]
+      :end (when end [(:line end) (:character end)])
+      :wsEdit (boolean (:ws-edit s))
+      :diags (mapv (fn [d] {:code (str (:code d)) :message (:message d)
+                            :line (get-in d [:range :start :line]) :ch (get-in d [:range :start :character])
+                            :refers (get-in d [:data :refers])})
+                   (get-in params [:context :diagnostics]))}
+     false)))
+
+(defn handle-req
+  "[state' msgs] for one request/exit message."
+  [{:keys [phase cancelled eng] :as s} {:keys [id method params] :as msg}]
+  (cond
+    (= method "exit") [s [{:nx/exit (if (= phase :shutdown) 0 1)}]]
+    (and method (nil? id) (str/starts-with? method "textDocument/did"))
+    (let [td (:textDocument params) uri (:uri td)]
+      (case method
+        "textDocument/didOpen" [(assoc-in s [:versions uri] (:version td)) []]
+        "textDocument/didChange" [(-> s (assoc-in [:versions uri] (:version td)) (assoc-in [:chg uri] (:version td))) []]
+        "textDocument/didClose" (release (update s :versions dissoc uri))
+        [s []]))
+    (and (nil? method) (contains? (:pending s) id)) (client-response s id msg)   ; applyEdit / question answered by the client
+    (and (nil? method) (string? id) (str/starts-with? id "nx-")) [s []] ; showDocument answer: ignored
+    (contains? cancelled id) [(update s :cancelled disj id) [(err id -32800 "Request cancelled")]]
+    (= method "initialize")
+    (if (= phase :new)
+      [(do (client-options! eng params) (assoc s :phase :running
+                 :ws-edit (get-in params [:capabilities :workspace :workspaceEdit])
+                 :ws-caps (let [we (get-in params [:capabilities :workspace :workspaceEdit])]
+                            {:docChanges (boolean (:documentChanges we)) :resourceOps (boolean (:resourceOperations we))
+                             :annotations (boolean (:changeAnnotationSupport we))})
+                 :init-opts (:initializationOptions params)
+                 :settings (let [io (:initializationOptions params)]
+                             {:usesMetadataForPrivacy (boolean (get io (keyword "use-metadata-for-privacy?")))
+                              :keepParens (boolean (get io (keyword "keep-parens-when-threading?")))})))
+       [(ok id caps/initialize-result)
+        {:nx/init {:root (:rootUri params) :token (some-> (:workDoneToken params) str)
+                   :watch? (boolean (get-in params [:capabilities :workspace :didChangeWatchedFiles]))}}]]
+      [s [(err id -32600 "Invalid Request: already initialized")]])
+    (contains? #{"clojure/serverInfo/log" "clojure/cursorInfo/log"} method)
+    (if (= phase :running)
+      (let [raw (if (= method "clojure/serverInfo/log")
+                  (mova.nx/query-j (mova.nx/snapshot eng) 0 "serverInfo" (mova.json/generate-string (:init-opts s) false))
+                  (let [pos (:position params)]
+                    (mova.nx/query (mova.nx/snapshot eng) 0 "cursorInfo" (or (get-in params [:textDocument :uri]) "") (:line pos) (:character pos) false "")))]
+        [s [(show-info (or raw "{}"))]])
+      [s []])
+    (= phase :new) [s [(err id -32002 "Server not initialized")]]
+    (= phase :shutdown) [s [(err id -32600 "Invalid Request: server is shutting down")]]
+    (= method "shutdown") [(assoc s :phase :shutdown) [(ok id nil)]]
+    (= method "completionItem/resolve")
+    [s [{:nx/raw (mova.nx/resolve-completion (mova.nx/snapshot eng) id (mova.json/generate-string params false))}]]
+    (= method "nx/ping") [s [(ok id {:pong (:n params)})]]
+    (stale? s msg) [(update s :parked conj msg) []]          ; answered when the analysis catches up
+    (contains? native-n-methods method)
+    (let [[native f] (get native-n-methods method)
+          [uri nums] (f params)
+          raw (mova.nx/query-n (mova.nx/snapshot eng) id native uri nums)]
+      [s [(if raw {:nx/raw raw} (ok id nil))]])
+    (= method "workspace/executeCommand") (exec-command s id params)
+    (= method "clojure/clojuredocs/raw")
+    (let [raw (mova.nx/query-j (mova.nx/snapshot eng) id "clojuredocs" (mova.json/generate-string params false))]
+      [s [(if raw {:nx/raw raw} (ok id nil))]])
+    (= method "clojure/serverInfo/raw")
+    (let [raw (mova.nx/query-j (mova.nx/snapshot eng) id "serverInfo" (mova.json/generate-string (:init-opts s) false))]
+      [s [(if raw {:nx/raw raw} (ok id nil))]])
+    (= method "clojure/workspace/projectTree/nodes")
+    (let [raw (mova.nx/query-j (mova.nx/snapshot eng) id "projectTree" (mova.json/generate-string params false))]
+      [s [(if raw {:nx/raw raw} (ok id nil))]])
+    (= method "textDocument/codeAction")
+    (let [raw (mova.nx/query-j (mova.nx/snapshot eng) id "codeAction" (code-action-params s params))]
+      [s [(if raw {:nx/raw raw} (ok id nil))]])
+    :else
+    (if-let [native (get native-methods method)]
+      (let [_ (when (= method "textDocument/hover")                  ; JVM force-get-document-text: opening a jar entry analyzes it fully
+                (let [u (get-in params [:textDocument :uri])]
+                  (when (and u (or (str/starts-with? u "jar:") (str/starts-with? u "zipfile:")))
+                    (mova.nx/open-external eng u))))
+            raw (native-query eng native id params)]
+        (if (and raw (not (:settled? s)) (contains? awaits-analysis method) (empty-frame? raw))
+          [(update s :waiting conj msg) []]                  ; answered when the project pass is over
+          [s [(if raw {:nx/raw raw} (ok id nil))]]))
+      [s [(if (contains? jvm-requests method) (ok id nil) (method-not-found id method))]])))   ; known but not native yet: null
+
+(defn- release
+  "[state' msgs]: answers parked requests whose analysis arrived (or whose doc was closed)."
+  [s]
+  (let [{ready false wait true} (group-by #(boolean (stale? s %)) (:parked s))]
+    (reduce (fn [[s out] m]
+              (let [[s msgs] (handle-req s m)] [s (into out msgs)]))
+            [(assoc s :parked (vec wait)) []]
+            ready)))
+
+(defn- route [s out]
+  (let [init (filterv :nx/init out)
+        out (filterv (complement :nx/init) out)]
+    [s (cond-> {} (seq out) (assoc :out out) (seq init) (assoc :init (mapv :nx/init init)))]))
+
+(defn query-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:req {} :cancel {} :committed {} :settled {}} :outs {:out {} :init {}}})
+    :init (fn [_] {:phase :new :cancelled #{} :eng (mova.nx/engine) :versions {} :parked [] :waiting [] :settled? false :pending {} :rid 1})
+    :transform (fn [s cid msg]
+                 (case cid
+                   :cancel
+                   (let [cid (get-in msg [:params :id])
+                         held (filter #(= cid (:id %)) (concat (:parked s) (:waiting s)))
+                         s (if (> (count (:cancelled s)) max-cancelled) (assoc s :cancelled #{}) s)]
+                     (if (seq held)
+                       (route (-> s (update :parked #(vec (remove (fn [m] (= cid (:id m))) %)))
+                                  (update :waiting #(vec (remove (fn [m] (= cid (:id m))) %))))
+                              [(err cid -32800 "Request cancelled")])
+                       [(update s :cancelled conj cid) {}]))
+                   :settled
+                   (let [s (assoc s :settled? true)
+                         held (:waiting s)
+                         [s out] (reduce (fn [[s out] m] (let [[s msgs] (handle-req s m)] [s (into out msgs)]))
+                                         [(assoc s :waiting []) []] held)]
+                     (route s out))
+                   :committed
+                   (if (seq (:parked s))
+                     (let [[s out] (release s)] (route s out))
+                     [s {}])
+                   (let [[s msgs] (handle-req s msg)] (route s msgs))))}))

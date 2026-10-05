@@ -1,0 +1,331 @@
+;; nx-stats: reads the metrics session files. Works with no server running; a server never reads them.
+;;   $XDG_STATE_HOME/nx/sessions/<start-ms>-<pid>.edn   one per server run, rewritten whole by that server
+;;   $XDG_STATE_HOME/nx/sessions/<start-ms>-<pid>.log   the journal of a run started with NX_OBS=1 (+ .log.1), `tail`
+;;   $XDG_STATE_HOME/nx/lifetime.edn                    {:v 1 :roots {root picture}}: compacted sessions
+;; File contents are input: every picture goes through sanitize; a file that will not read is skipped with a warning.
+(ns nx.stats
+  (:require [clojure.string :as str] [nx.core.latency :as lat]))
+
+(defn state-dir
+  "$XDG_STATE_HOME/nx, default ~/.local/state/nx."
+  []
+  (let [x (System/getenv "XDG_STATE_HOME")]
+    (str (if (seq x) x (str (System/getenv "HOME") "/.local/state")) "/nx")))
+
+(defn- warn [s]
+  (mova.io/write-str System/err (str "nx-stats: " s "\n"))
+  (mova.io/flush System/err))
+
+(defn- read-edn
+  "The EDN value in a file, or nil when it is missing or will not read."
+  [path]
+  (try (read-string (slurp path)) (catch Exception _ nil)))
+
+(defn- file-pid
+  "pid from a session file name <start-ms>-<pid>.edn, or nil."
+  [nm]
+  (when-let [[_ pid] (re-find #"^\d+-(\d+)\.edn$" nm)] (parse-long pid)))
+
+(defn- alive? [pid]
+  (try (boolean (and pid (pos? pid) (mova.os/pid-alive? pid))) (catch Exception _ false)))
+
+(defn load-sessions
+  "{:ok [{:name :path :pid :pic :live?}] :bad [name]} for the session files in dir, oldest first."
+  [dir]
+  (let [sdir (str dir "/sessions")
+        names (sort (filter #(str/ends-with? % ".edn") (try (map str (list-dir sdir)) (catch Exception _ []))))]
+    (reduce (fn [acc nm]
+              (let [path (str sdir "/" nm)
+                    pic (lat/sanitize (read-edn path))
+                    pid (or (file-pid nm) (:pid (:config pic)))]
+                (if pic
+                  (update acc :ok conj {:name (subs nm 0 (- (count nm) 4)) :path path :pid pid :pic pic
+                                        :live? (and (not (:ended pic)) (alive? pid))})
+                  (update acc :bad conj nm))))
+            {:ok [] :bad []} names)))
+
+(defn load-lifetime
+  "{root picture} from lifetime.edn; {} when missing. :bad true when it is there and will not read."
+  [dir]
+  (let [path (str dir "/lifetime.edn")]
+    (if-not (mova.fs/exists? path)
+      {:roots {}}
+      (let [x (read-edn path)]
+        (if (and (map? x) (= 1 (:v x)) (map? (:roots x)))
+          {:roots (into {} (keep (fn [[r p]] (when-let [p (lat/sanitize p)] [(str r) p]))) (:roots x))}
+          {:roots {} :bad true})))))
+
+(defn- root-of [pic] (or (:root (:config pic)) ""))
+
+(defn by-root
+  "{root merged-picture} over pictures."
+  [pics]
+  (reduce (fn [m p] (update m (root-of p) lat/merge-pictures p)) {} pics))
+
+(defn- fmt-us [us]
+  (cond (nil? us) "-"
+        (< us 1000) (str us "us")
+        (< us 1000000) (format "%.1fms" (/ us 1000.0))
+        :else (format "%.2fs" (/ us 1000000.0))))
+
+(defn- fmt-age [ms]
+  (let [s (quot (max 0 ms) 1000)]
+    (cond (< s 120) (str s "s") (< s 7200) (str (quot s 60) "m") (< s 172800) (str (quot s 3600) "h")
+          :else (str (quot s 86400) "d"))))
+
+(defn- requests [pic]
+  (reduce + (map (fn [[_ e]] (reduce + (vals (:outcomes e)))) (:ops pic))))
+
+(defn- cut [s n] (let [s (str s)] (if (> (count s) n) (str "…" (subs s (- (count s) (dec n)))) s)))
+
+(def ^:private native-stages
+  "Stage order of the native ops (worker jobs, project pass): one table row per stage."
+  [:m/queue-us :m/read-us :m/parse-us :m/analyze-us
+   :m/discover-us :m/config-us :m/classpath-us :m/jars-us :m/ext-dirs-us :m/index-us :m/files-us :m/pass-us])
+
+(defn stats-lines
+  "The per-op table of one picture. An op with :m/inject-us is one row; a native op (job/open, job/bg, bg/pass) is
+  one row per stage (`op stage`, in = its sample count)."
+  [pic]
+  (let [snap (lat/snapshot pic)
+        fmt "%-34s %6s %6s %6s %5s %5s %5s %9s %9s %9s"
+        n (fn [x] (if (and x (pos? x)) (str x) "-"))
+        times (fn [s]                                              ; a bucket midpoint may read above the max
+                (if (= 1 (:count s))
+                  (repeat 3 (fmt-us (:max-us s)))
+                  [(fmt-us (when (:p50-us s) (min (:p50-us s) (:max-us s))))
+                   (fmt-us (when (:p99-us s) (min (:p99-us s) (:max-us s)))) (fmt-us (:max-us s))]))
+        row (fn [[op e]]
+              (let [o (:outcomes e)
+                    st (:stages e)]
+                (if (or (contains? st :m/inject-us) (empty? st))
+                  [(apply format fmt (cut op 34) (n (:count e)) (n (:sent e)) (n (:ok o)) (n (:null o)) (n (:error o))
+                          (n (:cancelled o)) (times (get st :m/inject-us)))]
+                  (for [k native-stages :when (contains? st k)]
+                    (apply format fmt (cut (str op " " (subs (name k) 0 (- (count (name k)) 3))) 34)
+                           (n (:count (get st k))) "-" "-" "-" "-" "-" (times (get st k)))))))]
+    (into [(format fmt "op" "in" "out" "ok" "null" "err" "canc" "p50" "p99" "max")]
+          (mapcat row (sort-by key (:ops snap))))))
+
+(defn- fmt-mb [b] (if b (format "%.1f" (/ b 1000000.0)) "-"))   ; MB = 10^6 bytes, as footprint(1) and the benches
+
+(defn bg-line
+  "The project-pass counters (totals over the passes), or nil."
+  [pic]
+  (when-let [bg (:bg pic)]
+    (let [t (:total bg)]
+      (str "passes " (:passes bg) " | files " (:files t 0) " | classpath cached " (:cp-cached t 0) " errors " (:cp-errors t 0)
+           " | jars " (:jars t 0) " warm " (:jars-warm t 0) " cold " (:jars-cold t 0) " failed " (:jars-failed t 0)
+           " | jar files " (:jar-files t 0) " defs " (:jar-defs t 0) " cache " (fmt-mb (:jar-cache-b t)) "MB"
+           " | ext dirs " (:ext-dirs t 0) " files " (:ext-files t 0)))))
+
+(defn session-line
+  "Memory (phys_footprint, MB) and startup stamps (from the process start) of one session, or nil."
+  [pic]
+  (let [m (:mem pic) s (:startup pic)]
+    (when (or m s)
+      (str "    mem MB init " (fmt-mb (:init-b m)) " settled " (fmt-mb (:settled-b m)) " max " (fmt-mb (:max-b m))
+           " last " (fmt-mb (:last-b m))
+           " | startup spawn " (fmt-us (:spawn-us s)) " main " (fmt-us (:main-us s)) " initialize "
+           (fmt-us (:initialize-in-us s)) " -> " (fmt-us (:initialize-out-us s)) " settled " (fmt-us (:settled-us s))
+           " progress end " (fmt-us (:progress-end-us s))))))
+
+(defn procs-line
+  "Messages handled per proc (flow/ping, at most every 10 s), or nil."
+  [pic]
+  (when (seq (:procs pic))
+    (str "    procs " (str/join " " (map (fn [[p x]] (str (name p) " " (:count x) (when (and (:status x) (not= :running (:status x))) (str " " (name (:status x))))))
+                                        (sort-by key (:procs pic)))))))
+
+(defn- head-line [pic]
+  (str "sessions " (:sessions pic 1) " | requests " (requests pic)
+       " | span " (fmt-age (- (or (:until-ms pic) 0) (or (:since-ms pic) 0)))
+       " | errors " (:count (:errors pic) 0) " | lost " (:lost pic 0)
+       (when (pos? (:unanswered pic 0)) (str " | unanswered " (:unanswered pic)))
+       (when (pos? (:fold-errors pic 0)) (str " | fold-errors " (:fold-errors pic)))))
+
+(defn status-lines
+  "One line per session, then the lifetime roots."
+  [sessions lifetime now]
+  (let [fmt "%-22s %7s %-6s %6s %6s %5s %6s  %s"
+        row (fn [nm pid state pic]
+              (format fmt nm (or pid "-") state (requests pic) (:count (:errors pic) 0) (:lost pic 0)
+                      (fmt-age (- now (or (:since-ms pic) now))) (cut (root-of pic) 60)))]
+    (concat [(format fmt "session" "pid" "state" "reqs" "errors" "lost" "age" "root")]
+            (mapcat (fn [{:keys [name pid pic live?]}]
+                      (cond-> [(row name pid (cond live? "live" (:ended pic) "ended" :else "dead") pic)]
+                        (session-line pic) (conj (session-line pic))
+                        (procs-line pic) (conj (procs-line pic))))
+                    sessions)
+            (map (fn [[_ pic]] (row (str "lifetime(" (:sessions pic 1) ")") nil "ended" pic)) (sort-by key lifetime)))))
+
+;; ---- the journal (NX_OBS=1): `tail` ----
+
+(defn utc-time
+  "epoch ms -> \"HH:MM:SS.mmm\" (UTC)."
+  [ms]
+  (let [d (mod ms 86400000)
+        p2 (fn [n] (if (< n 10) (str "0" n) (str n)))
+        p3 (fn [n] (cond (< n 10) (str "00" n) (< n 100) (str "0" n) :else (str n)))]
+    (str (p2 (quot d 3600000)) ":" (p2 (quot (mod d 3600000) 60000)) ":" (p2 (quot (mod d 60000) 1000)) "." (p3 (mod d 1000)))))
+
+(def ^:private tail-fmt "%-12s %-9s %-34s %7s %-10s %9s %7s  %s")
+
+(def ^:private tail-head (format tail-fmt "time(UTC)" "kind" "op" "id" "outcome" "inject" "bytes" "uri / detail"))
+
+(defn tail-line
+  "One journal line as readable columns. A line that will not read is shown as it is (cut)."
+  [line]
+  (let [r (try (read-string line) (catch Exception _ nil))]
+    (if-not (and (map? r) (number? (:at r)))
+      (cut line 200)
+      (let [kind (or (:tel/kind r) (:obs/kind r))
+            shown #{:at :tel/kind :obs/kind :op :obs/op :id :outcome :m/inject-us :bytes :uri}
+            op (or (:op r) (:obs/op r))
+            detail (str/join " " (concat (when-let [u (:uri r)] [(cut u 70)])
+                                         (for [[k v] (sort-by (comp str key) (remove (comp shown key) r))]
+                                           (str (name k) "=" (pr-str v)))))
+            detail (if (> (count detail) 110) (str (subs detail 0 109) "…") detail)]
+        (str/trimr (format tail-fmt (utc-time (:at r)) (if kind (name kind) "-") (cut (cond (keyword? op) (name op) op op :else "-") 34)
+                           (if (some? (:id r)) (str (:id r)) "-") (if-let [o (:outcome r)] (name o) "-")
+                           (if-let [us (:m/inject-us r)] (fmt-us us) "-") (if-let [b (:bytes r)] (str b) "-") detail))))))
+
+(defn journal-names
+  "Journal file names (<start-ms>-<pid>.log) in dir/sessions, oldest first."
+  [dir]
+  (sort (filter #(re-find #"^\d+-\d+\.log$" %) (try (map str (list-dir (str dir "/sessions"))) (catch Exception _ [])))))
+
+(defn pick-journal
+  "The journal name chosen by --session (a name or a pid), else the newest; nil when there is none."
+  [dir session]
+  (let [ns (journal-names dir)]
+    (if session
+      (last (filter #(or (= session (subs % 0 (- (count %) 4))) (str/ends-with? % (str "-" session ".log"))) ns))
+      (last ns))))
+
+(defn- print-lines [lines]
+  (doseq [l lines] (println (tail-line l)))
+  (flush))
+
+(defn tail!
+  "Prints the last n lines of the chosen journal; with follow, keeps polling the file (250 ms) until the session has
+  ended (an end row) or its process is gone and nothing new came. Returns false when there is no journal."
+  [dir {:keys [session n follow]}]
+  (if-let [nm (pick-journal dir session)]
+    (let [path (str dir "/sessions/" nm)
+          pid (parse-long (second (re-find #"-(\d+)\.log$" nm)))
+          read (fn [] (try (slurp path) (catch Exception _ "")))
+          whole (fn [t] (let [e (inc (or (str/last-index-of t "\n") -1))] [(subs t 0 e) e]))
+          t (read)
+          [done pos] (whole t)
+          lines (str/split-lines done)]
+      (println tail-head)
+      (print-lines (take-last n lines))
+      (when follow
+        (loop [pos pos ended? (boolean (some #(re-find #":phase \"end\"" %) (take-last 3 lines)))]
+          (when-not ended?
+            (Thread/sleep 250)
+            (let [t (read)
+                  pos (if (< (count t) pos) 0 pos)                         ; rotated: the new file from its start
+                  [done e] (whole t)
+                  fresh (str/split-lines (subs done pos))]
+              (print-lines fresh)
+              (when-not (and (empty? fresh) (not (alive? pid)))
+                (recur e (boolean (some #(re-find #":phase \"end\"" %) fresh))))))))
+      true)
+    false))
+
+(defn lifetime-str
+  "Pretty EDN of lifetime.edn."
+  [roots]
+  (str "{:v 1\n :roots\n {"
+       (str/join "\n  " (map (fn [[r p]] (str (pr-str r) "\n" (lat/edn-str p))) (sort-by key roots)))
+       "}}\n"))
+
+(defn compact!
+  "Folds every session that ended or whose pid is dead into lifetime.edn (temp + rename), then deletes it. A live
+  session is never touched: its server rewrites the whole file. Returns [compacted kept]."
+  [dir]
+  (let [{:keys [ok]} (load-sessions dir)
+        done (remove :live? ok)
+        lt (load-lifetime dir)]
+    (when (:bad lt) (throw (ex-info "lifetime.edn will not read; fix or remove it first" {})))
+    (when (seq done)
+      (let [roots (reduce (fn [m {:keys [pic]}] (update m (root-of pic) lat/merge-pictures (assoc pic :ended true)))
+                          (:roots lt) done)
+            path (str dir "/lifetime.edn")
+            tmp (str path ".tmp")]
+        (spit tmp (lifetime-str roots))
+        (move-file tmp path)
+        (doseq [{:keys [path]} done]
+          (delete-file path)
+          (let [base (subs path 0 (- (count path) 4))]                       ; its journal, if it kept one
+            (doseq [j [(str base ".log") (str base ".log.1")] :when (mova.fs/exists? j)] (delete-file j))))))
+    [(count done) (- (count ok) (count done))]))
+
+(def ^:private usage
+  "usage: nx-stats <status|stats|latency|compact|tail> [--session ID|PID] [--root TEXT] [--by-root] [--all] [-n N] [-f]
+  status   per session: live/ended/dead, requests, errors, lost; then its memory and startup stamps
+  stats    per op: counts in/out, outcomes, p50/p99/max of :m/inject-us (frame read -> reply flushed);
+           worker jobs (job/open, job/bg) and the project pass (bg/pass): one row per stage
+  latency  the merged picture as EDN
+  compact  fold ended and dead sessions into lifetime.edn and delete them (and their journals)
+  tail     the last N journal lines (default 20) of the newest session, or --session; -f follows a live session
+  --session one session (file name or pid) | --root sessions whose root contains TEXT
+  --by-root one picture per root | --all also lifetime.edn (default: session files only)")
+
+(defn- parse-args [args]
+  (loop [o {:cmd (first args)} xs (rest args)]
+    (if-let [a (first xs)]
+      (case a
+        "--session" (recur (assoc o :session (second xs)) (drop 2 xs))
+        "--root" (recur (assoc o :root (second xs)) (drop 2 xs))
+        "--by-root" (recur (assoc o :by-root true) (rest xs))
+        "--all" (recur (assoc o :all true) (rest xs))
+        "-n" (let [n (some-> (second xs) parse-long)] (if (pos? (or n 0)) (recur (assoc o :n n) (drop 2 xs)) (assoc o :cmd nil)))
+        "-f" (recur (assoc o :follow true) (rest xs))
+        (assoc o :cmd nil))
+      o)))
+
+(defn- pick
+  "Sessions (and lifetime roots) chosen by the options."
+  [{:keys [session root all]} sessions lifetime]
+  (let [ss (cond->> sessions
+             session (filter #(or (= session (:name %)) (= session (str (:pid %)))))
+             root (filter #(str/includes? (root-of (:pic %)) root)))
+        lt (cond (or session (not all)) {}
+                 root (into {} (filter (fn [[r _]] (str/includes? r root))) lifetime)
+                 :else lifetime)]
+    [(vec ss) lt]))
+
+(defn -main [& args]
+  (let [{:keys [cmd] :as o} (parse-args args)
+        dir (state-dir)]
+    (cond
+      (not (contains? #{"status" "stats" "latency" "compact" "tail"} cmd)) (do (println usage) (System/exit 2))
+      (= cmd "tail") (do (when-not (tail! dir (assoc o :n (or (:n o) 20)))
+                           (println (str "no journal in " dir "/sessions (start the server with NX_METRICS=1 NX_OBS=1)")))
+                         (flush)
+                         (System/exit 0))
+      :else
+      (let [{:keys [ok bad]} (load-sessions dir)
+            lt (load-lifetime dir)
+            bad (cond-> bad (:bad lt) (conj "lifetime.edn"))
+            [ss roots] (pick o ok (:roots lt))
+            pics (concat (map :pic ss) (vals roots))]
+        (when (seq bad) (warn (str "skipped " (count bad) " corrupt file(s): " (str/join " " bad))))
+        (case cmd
+          "status" (doseq [l (status-lines ss roots (System/currentTimeMillis))] (println l))
+          "compact" (let [[n kept] (compact! dir)]
+                      (println (str "compacted " n " session(s) into " dir "/lifetime.edn; " kept " live left")))
+          (if (empty? pics)
+            (println (str "no sessions in " dir "/sessions"))
+            (doseq [[r pic] (if (:by-root o) (sort-by key (by-root pics)) [[nil (reduce lat/merge-pictures nil pics)]])]
+              (when r (println (str "== root " (if (= r "") "(none)" r))))
+              (if (= cmd "latency")
+                (print (lat/edn-str pic))
+                (do (println (head-line pic))
+                    (when-let [l (bg-line pic)] (println l))
+                    (doseq [l (stats-lines pic)] (println l)))))))
+        (flush)
+        (System/exit 0)))))

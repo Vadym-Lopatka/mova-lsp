@@ -1,0 +1,22 @@
+(ns clojure-lsp.metrics
+  "In-server metrics spans; no-op (one call + branch) when metrics are disabled.")
+
+(defmacro span
+  "Runs body; when metrics are enabled sends span `name` with `attrs` (evaluated after body)."
+  [name attrs & body]
+  `(if (mova.metrics/enabled?)
+     (let [t# (mova.metrics/now-ns)
+           r# (do ~@body)]
+       (mova.metrics/span! ~name t# ~attrs)
+       r#)
+     (do ~@body)))
+
+(defmacro span-with
+  "Like span, but attrs may use `res-sym` bound to the body result."
+  [name [res-sym] attrs & body]
+  `(if (mova.metrics/enabled?)
+     (let [t# (mova.metrics/now-ns)
+           ~res-sym (do ~@body)]
+       (mova.metrics/span! ~name t# ~attrs)
+       ~res-sym)
+     (do ~@body)))

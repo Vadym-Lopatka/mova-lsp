@@ -1,0 +1,18 @@
+;; MOVA-PATCH (shim): clojure.java.shell -- Mova has a native `sh` (see
+;; builtins::sys) with the same {:exit :out :err} return shape. The
+;; native now understands a trailing options map's `:dir` (subprocess
+;; cwd; see its own doc) directly, so this shim just forwards
+;; cmd-and-args unchanged instead of stripping the map -- it used to
+;; drop `:dir`/`:env`/etc silently, which made `clojure_lsp.classpath`'s
+;; `(shell/sh ... :dir root-path)` run in the WRONG directory (mova's
+;; own process cwd, not the project root), a real "Classpath lookup
+;; failed" cascade bug.
+(ns clojure.java.shell)
+
+(defn sh
+  [& cmd-and-args]
+  (let [args (vec cmd-and-args)]
+    (loop [i (count args), opts {}]
+      (if (and (>= i 2) (keyword? (nth args (- i 2))))
+        (recur (- i 2) (assoc opts (nth args (- i 2)) (nth args (- i 1))))
+        (apply clojure.core/sh (concat (subvec args 0 i) (when (seq opts) [opts])))))))

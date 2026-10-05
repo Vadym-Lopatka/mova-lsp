@@ -1,0 +1,53 @@
+;; Real clojure.edn on the JVM wraps clojure.lang.EdnReader, a Java
+;; class Mova has no equivalent of. This is a genuine, real Clojure
+;; namespace though (not a Java-backed veneer): older Clojure/self-host
+;; platforms (ClojureScript, babashka) implement clojure.edn by
+;; delegating to clojure.tools.reader.edn, which is exactly what this
+;; does -- and clojure.tools.reader is already vendored and loading on
+;; Mova (mova/vendor/tools.reader-1.6.0), so this is a real
+;; implementation, not a stub. Per mova/PLAN.md, this belongs in Mova's
+;; own embedded stdlib table long-term (like clojure/walk.clj); it lives
+;; here for now to stay within this task's workspace.
+(ns clojure.edn
+  (:refer-clojure :exclude [read read-string])
+  (:require
+   [clojure.tools.reader.edn :as edn]))
+
+(defn read
+  ([] (edn/read))
+  ([reader] (edn/read reader))
+  ([opts reader] (edn/read opts reader)))
+
+;; mova/PERF-LSP.md task 1: a 2 MB plain-data EDN file (clojuredocs
+;; export.compact.edn) costs +1.24 GB RSS parsed through the interpreted
+;; tools.reader.edn path above. `edn-fast-read-string*` is Mova's native
+;; byte-level EDN reader (src/edn_fast.rs, exposed via
+;; src/builtins/reflect.rs) -- it never produces tagged literals and
+;; never confuses a genuine EOF with a `nil` literal, so it's only tried
+;; when the caller's opts have none of :eof/:readers/:default (nothing
+;; for those to act on even had it succeeded). It returns `[true value]`
+;; on success or `[false nil]` on bail (anything outside its supported
+;; EDN subset: #inst/#uuid and other tagged literals, `#_` discards,
+;; non-ASCII symbols/keywords, >200 levels deep, etc.), so this always
+;; falls back to the full interpreted reader on bail -- semantics never
+;; change, only the common case (plain nested maps/vectors/strings/
+;; numbers/keywords) gets the native path.
+(defn- plain-opts?
+  [opts]
+  (and (not (contains? opts :eof))
+       (not (contains? opts :readers))
+       (not (contains? opts :default))))
+
+(defn read-string
+  ([s]
+   (let [r (mova.edn/edn-fast-read-string* s)]
+     (if (nth r 0)
+       (nth r 1)
+       (edn/read-string s))))
+  ([opts s]
+   (if (plain-opts? opts)
+     (let [r (mova.edn/edn-fast-read-string* s)]
+       (if (nth r 0)
+         (nth r 1)
+         (edn/read-string opts s)))
+     (edn/read-string opts s))))

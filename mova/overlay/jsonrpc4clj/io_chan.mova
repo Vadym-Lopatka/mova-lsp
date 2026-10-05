@@ -1,0 +1,153 @@
+(ns jsonrpc4clj.io-chan
+  (:require
+   [camel-snake-kebab.core :as csk]
+   [camel-snake-kebab.extras :as cske]
+   [cheshire.core :as json]
+   [clojure.core.async :as async]
+   [clojure.java.io :as io]
+   [clojure.string :as string]))
+  ;; MOVA-PATCH (lsp/io, review round 2): dropped `:import (java.io
+  ;; EOFException IOException InputStream OutputStream)` -- `input`/
+  ;; `output` are real `HostKind::InputStream`/`OutputStream` values now
+  ;; (`clojure.java.io/input-stream`/`output-stream`, `hostclass.rs`), but
+  ;; this file reaches them through `mova.io`'s stream natives
+  ;; (`read-line-bytes`/`read-bytes`/`write-str`/`flush`), not raw
+  ;; `.read`/`.write`/`.getBytes`/`String.` interop, for the same reason
+  ;; PLAN.md's Mova change rules give: no deep JVM stream emulation. The
+  ;; PUBLIC shape (`io/input-stream`/`output-stream` coercion,
+  ;; `with-open`-closing the output stream, `close?`) is UNCHANGED from
+  ;; the JVM original.
+
+(set! *warn-on-reflection* true)
+
+;;;; IO <-> chan (MOVA-PATCH, lsp/io campaign)
+;;
+;; The JVM original reads/writes a `Content-Length`-framed JSON-RPC stream
+;; through raw `java.io.InputStream`/`OutputStream` objects: `.read`
+;; byte-at-a-time for headers, `.read(buf, off, len)` for the body,
+;; `String.`/`.getBytes` for the UTF-8<->bytes conversion, `.write`/
+;; `.flush` to send. This overlay replaces exactly those primitives with
+;; three `mova.io` natives that do the identical job against WHATEVER real
+;; stream `input`/`output` name (`src/builtins/io.rs`, lsp/host branch):
+;; `mova.io/read-line-bytes`, `mova.io/read-bytes`, `mova.io/write-str` +
+;; `mova.io/flush`. Review round 2: `input`/`output` are genuinely THREADED
+;; THROUGH now (coerced via `io/input-stream`/`output-stream`, exactly like
+;; the JVM original), not ignored in favor of a hardcoded stdio special
+;; case -- `jsonrpc4clj.io-server/stdio-server`'s `System/in`/`System/out`
+;; is just the one real stream this campaign's smoke test happens to pass,
+;; not something this file hardcodes.
+
+(defn ^:private read-n-bytes
+  "MOVA-PATCH: `mova.io/read-bytes` reads exactly `content-length` BYTES
+  off `input` and UTF-8-decodes them in one native call -- no separate
+  byte-array allocation/`String.` construction, and (unlike the JVM
+  original) no `charset-s` parameter: the native only ever decodes UTF-8,
+  and nothing in this campaign's scope sends a non-UTF-8 `Content-Type`
+  header. `nil` at a clean EOF, matching `mova.io/read-line-bytes` below."
+  [input content-length]
+  (mova.io/read-bytes input content-length))
+
+(defn ^:private parse-charset [content-type]
+  (or (when content-type
+        (when-let [[_ charset] (re-find #"(?i)charset=(.*)$" content-type)]
+          (when (not= "utf8" charset)
+            charset)))
+      "utf-8"))
+
+(defn ^:private read-message [input headers keyword-function]
+  (try
+    (let [content-length (Long/valueOf ^String (get headers "Content-Length"))
+          ;; MOVA-PATCH: `parse-charset` is kept (byte-identical to the
+          ;; JVM original) purely for its `Content-Type` PARSING; the
+          ;; charset it computes is never actually used -- `read-n-bytes`
+          ;; above always decodes UTF-8 (see that fn's own doc).
+          _charset-s (parse-charset (get headers "Content-Type"))
+          content (read-n-bytes input content-length)]
+      (if (nil? content)
+        :parse-error
+        (json/parse-string content keyword-function)))
+    (catch Exception _
+      :parse-error)))
+
+(defn ^:private kw->camelCaseString
+  "Convert keywords to camelCase strings, but preserve capitalization of things
+  that are already strings."
+  [k]
+  (cond-> k (keyword? k) csk/->camelCaseString))
+
+(defn ^:private write-message [output msg]
+  ;; MOVA-PATCH: one `mova.io/write-str` call for the header+body
+  ;; (concatenated -- the header is pure ASCII, a subset of UTF-8, so
+  ;; writing it and the body as one UTF-8 write is byte-identical to the
+  ;; JVM original's separate ASCII-header/UTF-8-body writes) then
+  ;; `mova.io/flush`, instead of `.getBytes`/`.write`/`.write`/`.flush`.
+  ;; `.getBytes` isn't a Mova String veneer method at all (no deep JVM
+  ;; String emulation), so `mova.io/utf8-byte-count` stands in for
+  ;; `(count (.getBytes content "utf-8"))` -- the one thing this whole
+  ;; transport depends on getting right (a BYTE count, not a char count).
+  ;; `write-lock`/`locking` is dropped: `hostclass::stream_write_str`
+  ;; locks the SAME `Mutex<HostState>` every other op on this stream
+  ;; goes through, so two writers racing on one stream still can't
+  ;; interleave a header from one frame with another's body.
+  (let [content (json/generate-string (cske/transform-keys kw->camelCaseString msg))
+        content-length (mova.io/utf8-byte-count content)]
+    (mova.io/write-str output (str "Content-Length: " content-length "\r\n\r\n" content))
+    (mova.io/flush output)))
+
+(defn ^:private read-header-line
+  "Reads a line of input. Blocks if there are no messages on the input."
+  [input]
+  ;; MOVA-PATCH: `mova.io/read-line-bytes` returns `nil` at EOF (the JVM
+  ;; original's `::eof` keyword sentinel) -- see that native's doc.
+  (mova.io/read-line-bytes input))
+
+(defn ^:private parse-header [line headers]
+  (let [[h v] (string/split line #":\s*" 2)]
+    (assoc headers h v)))
+
+(defn input-stream->input-chan
+  "Returns a channel which will yield parsed messages that have been read off
+  the `input`. When the input is closed, closes the channel. By default when the
+  channel closes, will close the input, but can be determined by `close?`.
+
+  Reads in a thread to avoid blocking a go block thread."
+  ([input] (input-stream->input-chan input {}))
+  ([input {:keys [close? keyword-function]
+           :or {close? true, keyword-function csk/->kebab-case-keyword}}]
+   (let [input (io/input-stream input)
+         messages (async/chan 1)]
+     (async/thread
+       (loop [headers {}]
+         (let [line (read-header-line input)]
+           (cond
+             ;; input closed; also close channel
+             (nil? line) (async/close! messages)
+             ;; a blank line after the headers indicates start of message
+             (string/blank? line) (if (async/>!! messages (read-message input headers keyword-function))
+                                    ;; wait for next message
+                                    (recur {})
+                                    ;; messages closed
+                                    (when close? (.close input)))
+             :else (recur (parse-header line headers))))))
+     messages)))
+
+(defn output-stream->output-chan
+  "Returns a channel which expects to have messages put on it. nil values are
+  not allowed. Serializes and writes the messages to the output. When the
+  channel is closed, closes the output.
+
+  Writes in a thread to avoid blocking a go block thread."
+  [output]
+  (let [output (io/output-stream output)
+        messages (async/chan 1)]
+    (async/thread
+      (with-open [writer output] ;; close output when channel closes
+        (loop []
+          (when-let [msg (async/<!! messages)]
+            (try
+              (write-message writer msg)
+              (catch Throwable e
+                (async/close! messages)
+                (throw e)))
+            (recur)))))
+    messages))

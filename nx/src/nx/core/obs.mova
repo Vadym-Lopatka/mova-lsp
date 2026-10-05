@@ -1,0 +1,94 @@
+;; nx.core.obs — the error half of a sample project's obs namespace (same message vocabulary, :obs/kind is the discriminator):
+;;   {:obs/kind :error :obs/pid p :obs/op o :obs/cid c :obs/about a :obs/ex "first line"}
+;; Any exception thrown on a proc thread arrives on Flow's error-chan as a map that carries the proc state, the
+;; failing message and the step fn. flow->msg keeps pid, op, cid, the method of the message and one line: never
+;; document text. A fault lifecycle event (:proc-give-up, :proc-wedged, a :panicked/:killed :proc-exit) folds to
+;; :obs/kind :error too: a dead proc must never be invisible. Pure; nothing here touches a channel.
+(ns nx.core.obs
+  (:require [clojure.string :as str]))
+
+(def recent-cap 32)
+
+(defn initial-obs []
+  {:obs/counts {} :obs/by-pid {} :obs/recent [] :obs/last-error nil})
+
+(defn about
+  "A compact fingerprint of an arbitrary message: an LSP message is its method, anything else its shape."
+  [m]
+  (cond
+    (nil? m) nil
+    (map? m) (let [x (:method m)] (if (string? x) (subs x 0 (min 80 (count x))) :map))
+    (vector? m) :vector
+    :else :value))
+
+(defn ex-line
+  "The first line of an exception's string form, capped. An ex-info arrives as a pr-str of {:ex/message .. :ex/data ..}:
+  only the message is kept, the data never."
+  [ex]
+  (let [s (if (and (map? ex) (contains? ex :message)) (str (:message ex)) (str ex))
+        s (if (str/starts-with? s "{:ex/message")
+            (or (second (re-find #"^\{:ex/message \"((?:[^\"\\]|\\[^n])*)" s)) "ex-info")
+            s)
+        line (or (first (str/split-lines (if (= "" s) "unknown error" s))) "")]
+    (subs line 0 (min 120 (count line)))))
+
+(defn proc-fault?
+  [m]
+  (and (map? m)
+       (let [op (get m :clojure.core.async.flow/op)]
+         (or (contains? #{:proc-give-up :proc-wedged} op)
+             (and (= :proc-exit op)
+                  (contains? #{:panicked :killed} (get m :clojure.core.async.flow/reason)))))))
+
+(defn- proc-fault-ex
+  [pid op m]
+  (str "supervision: " pid " " op
+       (case op
+         :proc-give-up (when-let [n (get m :clojure.core.async.flow/restarts)] (str " after " n " restarts"))
+         :proc-exit (when-let [r (get m :clojure.core.async.flow/reason)] (str " (" r ")"))
+         nil)))
+
+(defn flow->msg
+  "One machinery-channel map -> the message vocabulary. Total: anything else is a bare error."
+  [m]
+  (try
+    (cond
+      (proc-fault? m)
+      (let [pid (get m :clojure.core.async.flow/pid)
+            op (get m :clojure.core.async.flow/op)]
+        {:obs/kind :error
+         :obs/pid pid
+         :obs/op op
+         :obs/ex (proc-fault-ex pid op m)})
+
+      (map? m)
+      {:obs/kind :error
+       :obs/pid (get m :clojure.core.async.flow/pid)
+       :obs/op (get m :clojure.core.async.flow/op)
+       :obs/cid (get m :clojure.core.async.flow/cid)
+       :obs/about (about (get m :clojure.core.async.flow/msg))
+       :obs/ex (ex-line (get m :clojure.core.async.flow/ex))}
+
+      :else {:obs/kind :error :obs/ex (ex-line m)})
+    (catch Exception _ {:obs/kind :error})))
+
+(defn note
+  "Fold one message into the snapshot."
+  [obs m]
+  (let [k (:obs/kind m)
+        counts (assoc (:obs/counts obs) k (inc (get (:obs/counts obs) k 0)))
+        by-pid (if-let [p (:obs/pid m)]
+                 (assoc (:obs/by-pid obs) p (inc (get (:obs/by-pid obs) p 0)))
+                 (:obs/by-pid obs))
+        recent (let [r (conj (:obs/recent obs) m)]
+                 (if (> (count r) recent-cap) (vec (rest r)) r))]
+    (assoc obs
+           :obs/counts counts
+           :obs/by-pid by-pid
+           :obs/recent recent
+           :obs/last-error (if (= :error k) m (:obs/last-error obs)))))
+
+(defn errors
+  "The picture's :errors view of a snapshot."
+  [obs]
+  {:count (get (:obs/counts obs) :error 0) :by-pid (:obs/by-pid obs) :last (:obs/last-error obs)})

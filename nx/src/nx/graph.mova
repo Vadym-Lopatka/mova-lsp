@@ -1,0 +1,47 @@
+;; The flow topology as data.
+;;   rpc-in(:io) -> router -req-> query -> rpc-out(:io)
+;;                       -cancel-> query ;  query -init-> bg ; router -lifecycle(initialized)-> bg
+;;                       -notif-> docs -changed-> sched -(native pool, hi prio)-.
+;;   bg(:io): discovery -> native pool (lo prio)                                 |
+;;   collector(:io): blocks on pool results -> store (sole writer) -committed-> diags -> rpc-out
+;;                                                           -progress-> bg -> rpc-out
+(ns nx.graph
+  (:require [nx.rpc :as rpc] [nx.router :as router] [nx.docs :as docs] [nx.sched :as sched]
+            [nx.collector :as collector] [nx.store :as store] [nx.bg :as bg]
+            [nx.diags :as diags] [nx.query :as query]))
+
+(defn topology
+  "met = metrics on?: picks the tapped reader/writer steps once, here (off = the plain steps, no per-message test).
+  exit-ch = one-slot chan, writer -> main (metrics on only)."
+  [{:keys [exit-ch met]}]
+  {:procs {:rpc-in    {:proc (flow/process (if met (rpc/reader-step-tapped) (rpc/reader-step)) {:workload :io})}
+           :router    {:proc (flow/process (router/router-step))}
+           :query     {:proc (flow/process (query/query-step))}
+           :docs      {:proc (flow/process (docs/docs-step))}
+           :sched     {:proc (flow/process (sched/sched-step))}
+           :collector {:proc (flow/process (collector/collector-step) {:workload :io})}
+           :store     {:proc (flow/process (store/store-step))}
+           :diags     {:proc (flow/process (diags/diags-step))}
+           :bg        {:proc (flow/process (bg/bg-step) {:workload :io})}
+           :rpc-out   {:proc (flow/process (if met (rpc/writer-step-tapped exit-ch) (rpc/writer-step)) {:workload :io})}}
+   :conns [[[:rpc-in :out] [:router :in]]
+           [[:router :req] [:query :req]]
+           [[:router :cancel] [:query :cancel]]
+           [[:router :notif] [:docs :in]]
+           [[:router :lifecycle] [:bg :initialized]]
+           [[:router :watched] [:docs :watched]]
+           [[:query :init] [:bg :init]]
+           [[:docs :changed] [:sched :in]]
+           [[:docs :watch] [:sched :watch]]
+           [[:sched :watched] [:diags :watched]]
+           [[:sched :open] [:diags :open]]
+           [[:collector :out] [:store :in]]
+           [[:store :committed] [:diags :committed]]
+           [[:store :committed] [:query :committed]]
+           [[:diags :progress] [:bg :progress]]
+           [[:query :out] [:rpc-out :in]]
+           [[:diags :out] [:rpc-out :in]]
+           [[:bg :out] [:rpc-out :in]]
+           [[:bg :settled] [:query :settled]]]})
+
+(defn build [opts] (flow/create-flow (topology opts)))

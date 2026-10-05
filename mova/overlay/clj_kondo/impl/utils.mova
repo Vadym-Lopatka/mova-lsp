@@ -1,0 +1,865 @@
+(ns clj-kondo.impl.utils
+  {:no-doc true}
+  (:refer-clojure :exclude [update-vals eduction select-keys get-in])
+  (:require
+   [babashka.fs :as fs]
+   [clj-kondo.impl.analyzer.common :as common]
+   [clj-kondo.impl.rewrite-clj.node.keyword :as k]
+   [clj-kondo.impl.rewrite-clj.node.protocols :as node]
+   [clj-kondo.impl.rewrite-clj.node.quote :as node-quote]
+   [clj-kondo.impl.rewrite-clj.node.seq :as seq]
+   [clj-kondo.impl.rewrite-clj.node.string :as node-string]
+   [clj-kondo.impl.rewrite-clj.node.token :as token]
+   [clj-kondo.impl.rewrite-clj.parser :as p]
+   [clj-kondo.impl.rewrite-clj.reader :refer [*reader-exceptions*]]
+   [clojure.java.io :as io]
+   ;; MOVA-PATCH: clojure.pprint isn't vendored/ported on Mova yet (a
+   ;; ~2000-line stdlib namespace, out of scope for this task); this
+   ;; namespace's only use of it is `where-am-i` below, a debug/
+   ;; introspection helper never called during ordinary linting, so
+   ;; dropping the require (and patching that one fn) unblocks every
+   ;; OTHER caller of this namespace instead of pulling in the whole
+   ;; library for one unused debug fn.
+   [clojure.set :as set]
+   [clojure.string :as str]))
+
+(set! *warn-on-reflection* true)
+
+;; A record for var usages ("calls"). One of these is allocated for every var
+;; usage in every linted source file, and its fields are read many times by
+;; lint-var-usage and friends, so field access speed and construction cost
+;; matter. Keys not listed here still work via the record's extmap.
+(defrecord VarUsage
+    [type name resolved-ns ns alias arity
+     row col end-row end-col
+     base-lang lang filename expr callstack condition config top-ns
+     arg-types simple? interop? resolved-core?
+     unresolved? unresolved-ns unresolved-symbol-disabled?
+     clojure-excluded? private-access?
+     idx len derived-location in-def in-comment context
+     defmethod dispatch-val-str refer id ret
+     redundant-fn-wrapper-parent-loc])
+
+(def ^:private var-usage-basis
+  (map keyword (VarUsage/getBasis)))
+
+(defmacro var-usage
+  "Builds a VarUsage record from a literal map, positionally at compile time,
+  avoiding an intermediate hash map per var usage. Keys must be literal
+  keywords naming VarUsage fields."
+  [m]
+  (assert (map? m) "var-usage expects a literal map")
+  (let [unknown (remove (set var-usage-basis) (keys m))]
+    (assert (empty? unknown) (str "Unknown VarUsage keys: " (vec unknown))))
+  ;; Direct constructor call: the positional factory fn would go through
+  ;; RestFn for > 20 args, allocating an args seq per usage.
+  `(new clj_kondo.impl.utils.VarUsage ~@(map #(clojure.core/get m %) var-usage-basis)))
+
+(defrecord Binding
+    [name filename row col end-row end-col tag auto-resolved required
+     keyword id str scope-end-row scope-end-col derived-location])
+
+(def ^:private binding-basis
+  (map clojure.core/keyword (Binding/getBasis)))
+
+(def ^:private meta-shielded-binding-fields
+  ;; user metadata must not overwrite the record's own fields, e.g.
+  ;; ^{:name "hacked" :filename "evil.clj"}. :derived-location is the
+  ;; exception, hook postprocessing legitimately sets it in meta
+  (remove #{:derived-location} binding-basis))
+
+(defn merge-binding-meta
+  "Merges meta keys beyond a Binding's own fields into binding `v`:
+  :user-meta, :clj-kondo/skip-reg-binding or the generated flag ride along.
+  Meta that is exactly the four positions has nothing to add."
+  [v m]
+  (if (and (= 4 (count m)) (:row m))
+    v
+    (merge v (apply dissoc m meta-shielded-binding-fields))))
+
+(defmacro binding-rec
+  "Builds a Binding record positionally at compile time, avoiding an
+  intermediate hash map per binding. Each field comes from the literal
+  `overrides` map when present, else it is copied from source map expr
+  `m`, absent keys giving nil fields, and meta keys beyond the fields are
+  merged in via merge-binding-meta. Override keys must be literal keywords
+  naming Binding fields."
+  [m overrides]
+  (assert (map? overrides) "binding-rec expects a literal overrides map")
+  (let [unknown (remove (set binding-basis) (keys overrides))]
+    (assert (empty? unknown) (str "Unknown Binding keys: " (vec unknown))))
+  (let [msym (gensym "m")]
+    `(let [~msym ~m]
+       (merge-binding-meta
+        (new clj_kondo.impl.utils.Binding
+             ~@(map (fn [k]
+                      (if (contains? overrides k)
+                        (clojure.core/get overrides k)
+                        `(clojure.core/get ~msym ~k)))
+                    binding-basis))
+        ~msym))))
+
+(let [not-found (Object.)]
+  (defn select-keys
+    "Like `clojure.core/select-keys`, but uses `reduce` to traverse the list of keys
+  for efficiency, and also doesn't use `find` to avoid redundant allocations."
+    [m keyseq]
+    (persistent!
+     (reduce (fn [acc k]
+               (let [v (get m k not-found)]
+                 (if (identical? v not-found)
+                   acc
+                   (assoc! acc k v))))
+             (transient {}) keyseq))))
+
+(let [not-found (Object.)]
+  (defn update-some
+    "Like `clojure.core/update` but only performs the update on a key if the map
+  contains a value for that key."
+    [m k f]
+    (let [v (get m k not-found)]
+      (if (identical? v not-found)
+        m
+        (assoc m k (f v))))))
+
+;;; export rewrite-clj functions
+
+(defn tag [expr]
+  (when expr (node/tag expr)))
+
+(def map-node seq/map-node)
+(def vector-node seq/vector-node)
+(def list-node seq/list-node)
+(def set-node seq/set-node)
+(def token-node token/token-node)
+(def quote-node node-quote/quote-node)
+(def keyword-node k/keyword-node)
+(def string-node node-string/string-node)
+
+(defn sexpr [node]
+  (try
+    (node/sexpr node)
+    (catch clojure.lang.ExceptionInfo e
+      (if *reader-exceptions*
+        (let [{:keys [type ex-kind]} (ex-data e)]
+          (if (and (= :reader-exception type)
+                   (= :reader-error ex-kind))
+            (let [m (meta node)
+                  f (assoc m :message (.getMessage e))]
+              (swap! *reader-exceptions* conj (ex-info "Syntax error" {:findings [f]})))
+            (throw e)))
+        (throw e)))))
+
+(defn list-node? [n]
+  (and (instance? clj_kondo.impl.rewrite_clj.node.seq.SeqNode n)
+       (identical? :list (tag n))))
+
+(defn set-node? [n]
+  (and (instance? clj_kondo.impl.rewrite_clj.node.seq.SeqNode n)
+       (identical? :set (tag n))))
+
+;;; end export
+
+(defn print-err! [& strs]
+  (binding [*out* *err*]
+    (apply println strs))
+  nil)
+
+(defn bytes->hex
+  "Lowercase hex-encode a byte array. Output is exactly `2 * (alength bs)`
+  chars. Use this instead of `(map #(format \"%02x\" %) bs)` - that idiom
+  sign-extends negative `byte` primitives to 8-char ints (`-1` -> `\"ffffffff\"`)."
+  ^String [^bytes bs]
+  (format (str "%0" (* 2 (alength bs)) "x") (BigInteger. 1 bs)))
+
+(defn symbol-call
+  "Returns symbol of call"
+  [expr]
+  (when (= :list (node/tag expr))
+    (let [first-child (-> expr :children first)
+          ?sym (:value first-child)]
+      (when (symbol? ?sym)
+        ?sym))))
+
+(defn keyword-node? [n]
+  (instance? clj_kondo.impl.rewrite_clj.node.keyword.KeywordNode n))
+
+(defn node->keyword
+  "Returns keyword from node, if it contains any."
+  [node]
+  (:k node))
+
+;; this zipper version is much slower than the above
+#_(defn remove-noise
+    ([expr] (remove-noise expr nil))
+    ([expr config]
+     (let [zloc (z/edn* expr)]
+       (loop [zloc zloc]
+         (cond (z/end? zloc) (z/root zloc)
+               :else (let [node (z/node zloc)
+                           remove?
+                           (or (whitespace? node)
+                               (uneval? node)
+                               (comment? node))]
+                       (recur (if remove? (z/remove zloc)
+                                  (cz/next zloc)))))))))
+
+(defn attach-branch* [node lang]
+  (vary-meta node assoc :branch lang))
+
+(defn attach-branch [node lang splice?]
+  (cond-> (attach-branch* node lang)
+    splice? (update-some :children (fn [children]
+                                     (map #(attach-branch* % lang) children)))))
+(defmacro get-in
+  "Similar to `clojure.core/get-in'`, but is a macro and when it encounters a
+  literal vector of keys, then it unrolls the keys into a series of `get` calls
+  which is more efficient than constructing the vector path and then iterating
+  over it. Otherwise, if `ks` is not a literal vector, expand to a regular
+  `clojure.core/get-in` invocation."
+  [m ks]
+  (if (vector? ks)
+    `(-> ~m ~@(map #(if (keyword? %) % `(get ~%)) ks))
+    `(clojure.core/get-in ~m ~ks)))
+
+(def condition-always-true-msg
+  "The only message the removed :condition-always-true linter ever emitted. Its
+  config and ignores still apply to the findings carrying it, so reword it here
+  rather than at the call sites, see findings/legacy-always-true-type."
+  "Condition always true")
+
+(defn linter-disabled? [ctx linter]
+  (= :off (get-in ctx [:config :linters linter :level])))
+
+(defn location [m]
+  (select-keys m [:filename :row :col :end-row :end-col]))
+
+(defn node->line [filename node t message]
+  (let [m (meta node)]
+    (assoc (location m)
+           :type t
+           :message message
+           :filename filename)))
+
+(defn lint-unreachable-reader-conditional! [ctx k ts]
+  (when (and (= :default (:k k))
+             (seq ts)
+             (not (linter-disabled? ctx :unreachable-code)))
+    (common/reg-finding! ctx (node->line (:filename ctx)
+                                         k
+                                         :unreachable-code
+                                         "Unreachable code: default reader conditional branch should go last"))))
+
+(defn process-reader-conditional [ctx node lang splice?]
+  (if (and node
+           (= :reader-macro (node/tag node))
+           (let [sv (-> node :children first :string-value)]
+             (str/starts-with? sv "?")))
+    (let [children (-> node :children last :children)]
+      (loop [[k v & ts] children
+             default nil]
+        (when-not (keyword? (:k k))
+          (common/reg-finding! ctx (assoc (meta k)
+                                          :filename (:filename ctx)
+                                          :level :error
+                                          :type :syntax
+                                          :message "Feature should be a keyword")))
+        (lint-unreachable-reader-conditional! ctx k ts)
+        (let [kw (:k k)
+              default (or default
+                          (when (= :default kw)
+                            v))]
+          (if (= lang kw)
+            (attach-branch v lang splice?)
+            (if (seq ts)
+              (recur ts default)
+              default)))))
+    node))
+
+(declare select-lang)
+
+(defn select-lang-children [ctx node lang]
+  (if-let [children (:children node)]
+    (let [new-children (loop [acc []
+                              children children]
+                         (if-let [node (first children)]
+                           (let [splice? (= "?@" (some-> node :children first :string-value))
+                                 node-meta (meta node)]
+                             (cond
+                               (not (:clj-kondo/uneval node-meta))
+                               (if-let [processed (select-lang ctx node lang splice?)]
+                                 (if splice?
+                                   (recur (into acc (:children processed)) (next children))
+                                   (recur (conj acc processed) (next children)))
+                                 (recur acc (next children)))
+                               (contains? (:clj-kondo/uneval node-meta) lang)
+                               (do (common/reg-finding!
+                                    ctx (assoc (node->line (:filename ctx) node :syntax
+                                                           (if (second children)
+                                                             "#_ with unmatched reader conditional discards the next form"
+                                                             "#_ with unmatched reader conditional discards the closing delimiter"))
+                                               :level (if (second children) :warning :error)))
+                                   (recur acc (drop 2 children)))
+                               :else
+                               (recur acc (next children))))
+                           acc))]
+      (assoc node :children
+             new-children))
+    node))
+
+(defn select-lang
+  ([ctx node lang] (select-lang ctx node lang nil))
+  ([ctx node lang splice?]
+   (when-let [processed (process-reader-conditional ctx node lang splice?)]
+     (select-lang-children ctx processed lang))))
+
+(defn parse-string [s]
+  (p/parse-string s))
+
+(defn parse-string-all
+  [s]
+  (p/parse-string-all s))
+
+(def vconj (fnil conj []))
+
+(declare deep-merge)
+
+(defn- deep-assoc
+  "This code is extracted into a named function instead of being a lambda to avoid
+  re-allocating the lambda object in each call to `merge-with*`."
+  [m1 k v2]
+  (let [v1 (get m1 k ::empty)
+        new-v (if (identical? v1 ::empty)
+                v2
+                (deep-merge v1 v2))]
+    (if (identical? v1 new-v)
+      m1
+      (assoc m1 k new-v))))
+
+(defn- merge-with*
+  "More efficient implementation of `clojure.core/merge-with` for two maps with
+  `deep-merge` hardcoded as the combiner function."
+  [m1 m2]
+  (if (or (nil? m1) (nil? m2))
+    (or m1 m2 {})
+    (reduce-kv deep-assoc m1 m2)))
+
+(defn deep-merge
+  "deep merge that also mashes together sequentials"
+  ([])
+  ([a] a)
+  ([a b]
+   (cond (nil? b) a
+         (when-let [m (meta b)]
+           (:replace m)) b
+         (and (map? a) (map? b)) (merge-with* a b)
+         ;; we often get called on equal sets, let's optimize for that.
+         ;; set/union is better than `into` since it pours smaller into bigger.
+         (and (set? a) (set? b)) (if (= a b)
+                                   b
+                                   (set/union a b))
+         ;; Use reduce+conj instead of into to avoid transient roundtrips.
+         (and (or (sequential? a) (set? a))
+              (or (sequential? b) (set? b))) (reduce conj a b)
+         :else b))
+  ([a b & more]
+   #_{:clj-kondo/ignore [:reduce-without-init]}
+   (reduce merge-with* (list* a b more))))
+
+(defn constant?
+  "returns true of expr represents a compile time constant"
+  [expr]
+  (let [t (node/tag expr)]
+    (case t
+      ;; boolean, single-line string, char, number, keyword
+      :token
+      (not (symbol? (:value expr)))
+      ;; multi-line string and quoted values
+      (:multi-line :quote) true
+      (:vector :set :map) (every? constant? (:children expr))
+      :namespaced-map (every? constant? (-> expr :children first :children))
+      false)))
+
+(defn boolean-token? [node]
+  (boolean? (:value node)))
+
+(defn nil-token?
+  "True for a literal nil. A token node's value is nil only for the nil literal.
+  Keyword and string nodes are their own types, so instance? excludes them,
+  unlike the :token tag which they share."
+  [node]
+  (and (instance? clj_kondo.impl.rewrite_clj.node.token.TokenNode node)
+       (nil? (:value node))))
+
+(defn char-token? [node]
+  (char? (:value node)))
+
+(defn string-from-token [node]
+  (when (:lines node)
+    (node/sexpr node)))
+
+(defn number-token? [node]
+  (number? (:value node)))
+
+(defn symbol-token? [node]
+  (symbol? (:value node)))
+
+(defn symbol-from-token [node]
+  (when-let [?sym (:value node)]
+    (when (symbol? ?sym)
+      ?sym)))
+
+(defn map-node-vals [{:keys [children]}]
+  (take-nth 2 (rest children)))
+
+(defn map-node-get-value-node
+  "Return value node from map node matching given keyword `kw`"
+  [{:keys [children]} kw]
+  (loop [kvs (partition 2 children)]
+    (let [kv (first kvs)]
+      (cond
+        (nil? kv) nil
+        (= kw (node->keyword (first kv))) (second kv)
+        :else (recur (rest kvs))))))
+
+(defmacro one-of [x elements]
+  `(let [x# ~x]
+     (case x# (~@elements) x# nil)))
+
+(defn ctx-with-bindings [ctx bindings]
+  (update ctx :bindings (fn [b]
+                          (into b bindings))))
+
+(defn kw->sym [^clojure.lang.Keyword k]
+  (.sym k))
+
+(defn- reduce-map
+  "From medley"
+  [f coll]
+  (when coll
+    (let [coll' (if (record? coll) (into {} coll) coll)
+          e (empty coll')]
+      (persistent! (reduce-kv (f assoc!) (transient e) coll')))))
+
+(defn map-vals
+  "Maps a function over the values of an associative collection. From medley."
+  [f coll]
+  (reduce-map (fn [xf] (fn [m k v] (xf m k (f v)))) coll))
+
+(defn assoc-some
+  "Associates a key with a value in a map, if and only if the value is
+  not nil. From medley."
+  ([m k v]
+   (if (nil? v) m (assoc m k v)))
+  ([m k v & kvs]
+   (reduce (fn [m [k v]] (assoc-some m k v))
+           (assoc-some m k v)
+           (partition 2 kvs))))
+
+(defn assoc-new
+  "Associates a key with a value in a map if the previous value is missing or
+  different from new value. Treats missing value and `nil` as same."
+  [m k v]
+  (let [old-value (get m k nil)]
+    (if (= old-value v)
+      m
+      (assoc m k v))))
+
+(defn select-some
+  "Like select-keys, but only selects when value is not nil."
+  ([m ks]
+   (persistent!
+    (reduce (fn [acc k]
+              (if-some [v (get m k)]
+                (assoc! acc k v)
+                acc))
+            (transient {})
+            ks))))
+
+(defn keep-remove [p xs]
+  (loop [xs xs
+         kept (transient [])
+         removed (transient [])]
+    (if xs
+      (let [x (first xs)] (if-let [v (p x)]
+                            (recur (next xs)
+                                   (conj! kept v) removed)
+                            (recur (next xs) kept (conj! removed x))))
+      [(persistent! kept) (persistent! removed)])))
+
+(defn eduction
+  "Identical to `clojure.core/eduction` but doesn't perform expensive and useless
+  argument manipulation."
+  [xform coll]
+  (->Eduction xform coll))
+
+(defn some'
+  "Like `clojure.core/some`, but uses a `reduce` to traverse the collection for
+  performance reasons (`reduce` is more efficient and allocation-free for
+  vectors)."
+  [pred coll]
+  (reduce #(when-let [r (pred %2)]
+             (reduced r))
+          nil coll))
+
+(defn resolve-ns [idacs base-lang lang ns]
+  (case [base-lang lang]
+    [:clj :clj] (or (get-in idacs [:clj :defs ns])
+                    (get-in idacs [:cljc :defs ns]))
+    [:cljs :cljs] (or (get-in idacs [:cljs :defs ns])
+                      ;; cljs func in another cljc file
+                      (get-in idacs [:cljc :defs ns])
+                      ;; maybe a macro?
+                      (get-in idacs [:clj :defs ns])
+                      (get-in idacs [:cljc :defs ns]))
+    ;; calling a clojure function from cljc
+    [:cljc :clj] (or (get-in idacs [:clj :defs ns])
+                     (get-in idacs [:cljc :defs ns]))
+    ;; calling function in a CLJS conditional from a CLJC file
+    [:cljc :cljs] (or (get-in idacs [:cljs :defs ns])
+                      (get-in idacs [:cljc :defs ns])
+                      ;; could be a macro
+                      (get-in idacs [:clj :defs ns])
+                      (get-in idacs [:cljc :defs ns]))))
+
+(defn resolve-call* [idacs call fn-ns fn-name]
+  ;; (prn "RES" fn-ns fn-name)
+  (let [call-lang (:lang call)
+        base-lang (:base-lang call) ;; .cljc, .cljs or .clj file
+        unresolved? (:unresolved? call)
+        unknown-ns? (identical? fn-ns :clj-kondo/unknown-namespace)
+        fn-ns (if unknown-ns? (:ns call) fn-ns)]
+    ;; (prn "FN NS" fn-ns fn-name (keys (get (:defs (:clj idacs)) 'clojure.core)))
+    (case [base-lang call-lang]
+      [:clj :clj] (or (get-in idacs [:clj :defs fn-ns fn-name])
+                      (get-in idacs [:cljc :defs fn-ns :clj fn-name]))
+      [:cljs :cljs] (or (get-in idacs [:cljs :defs fn-ns fn-name])
+                        ;; when calling a function in the same ns, it must be in another file
+                        ;; an exception to this would be :refer :all, but this doesn't exist in CLJS
+                        (when (not (and unknown-ns? unresolved?))
+                          (or
+                           ;; cljs func in another cljc file
+                           (get-in idacs [:cljc :defs fn-ns :cljs fn-name])
+                           ;; maybe a macro?
+                           (get-in idacs [:clj :defs fn-ns fn-name])
+                           (get-in idacs [:cljc :defs fn-ns :clj fn-name]))))
+      ;; calling a clojure function from cljc
+      [:cljc :clj] (or (get-in idacs [:clj :defs fn-ns fn-name])
+                       (get-in idacs [:cljc :defs fn-ns :clj fn-name]))
+      ;; calling function in a CLJS conditional from a CLJC file
+      [:cljc :cljs] (or (get-in idacs [:cljs :defs fn-ns fn-name])
+                        (get-in idacs [:cljc :defs fn-ns :cljs fn-name])
+                        ;; could be a macro
+                        (get-in idacs [:clj :defs fn-ns fn-name])
+                        (get-in idacs [:cljc :defs fn-ns :clj fn-name])))))
+
+(defn prefer-comment-def
+  "Usages in comment forms resolve against a comment form redefinition."
+  [usage resolved]
+  (if-let [cd (and (:in-comment usage)
+                   (:comment-def resolved))]
+    cd
+    resolved))
+
+(defn stderr [& msgs]
+  (binding [*out* *err*]
+    (apply println msgs)))
+
+(defn resolve-call
+  ([idacs call call-lang fn-ns fn-name unresolved? refer-alls]
+   (resolve-call idacs call call-lang fn-ns fn-name unresolved? refer-alls #{}))
+  ([idacs call call-lang fn-ns fn-name unresolved? refer-alls seen]
+   (when-let [called-fn
+              (or (resolve-call* idacs call fn-ns fn-name)
+                  (when unresolved?
+                    (some #(resolve-call* idacs call % fn-name)
+                          (into (vec
+                                 (keep (fn [[ns {:keys [excluded]}]]
+                                         (when-not (contains? excluded fn-name)
+                                           ns))
+                                       refer-alls))
+                                (when (not (:clojure-excluded? call))
+                                  [(case call-lang #_base-lang
+                                         :clj 'clojure.core
+                                         :cljs 'cljs.core
+                                         :cljc 'clojure.core)])))))]
+     (if-let [imported-ns (:imported-ns called-fn)]
+       (or
+        (let [imported-var (:imported-var called-fn)
+              seenv [imported-ns imported-var]]
+          (when-not (seen seenv)
+            (resolve-call idacs call call-lang imported-ns imported-var
+                          unresolved? refer-alls (conj seen seenv))))
+        ;; if we cannot find the imported var here, we fall back on called-fn
+        called-fn)
+       called-fn))))
+
+(defn handle-ignore [ctx expr]
+  (let [cljc? (identical? :cljc (:base-lang ctx))
+        lang (:lang ctx)
+        m (meta expr)]
+    (when-let [ignore (:clj-kondo/ignore m)]
+      (let [node (:linters ignore)
+            linters (if node
+                      (let [node (if cljc?
+                                   (select-lang ctx node (:lang ctx))
+                                   node)
+                            linters (when node (node/sexpr node))]
+                        linters)
+                      ignore)
+            linters (if (or (true? linters)
+                            (identical? :all linters))
+                      :all (set linters))
+            ignore (cond-> (assoc m :ignore linters)
+                     cljc? (assoc :cljc true)
+                     node (assoc-in [:clj-kondo/ignore :linters] nil))]
+        (swap! (:ignores ctx) update-in [(:filename ctx) lang]
+               (fn [ignores]
+                 (let [id (:clj-kondo/ignore-id ignore)]
+                   (if (and id (some #(= id (:clj-kondo/ignore-id %)) ignores))
+                     ignores
+                     (vconj ignores ignore)))))))))
+
+(defn err [& xs]
+  (binding [*out* *err*]
+    (apply prn xs)))
+
+;;; os specific
+
+;; MOVA-PATCH: `(System/getProperty "os.name")` is honestly `nil` on Mova
+;; (only `line.separator` is answered for real, see
+;; `builtins::statics::reg_static_fn`'s `System/getProperty` doc) rather
+;; than faking a JVM-only property; mova targets Unix-likes only, so
+;; `windows?` is simply `false`, matching that same platform stance.
+(def windows? false)
+
+(defn unixify-path
+  "Convert dir separators in `s`, when on Windows, to forward slashes.
+   Using forward slashes in paths make paths platform agnostic as Java does understand / as a path separator on Windows.
+   Note that you'll only want to call this function on relative paths."
+  [s]
+  (if windows?
+    (str/replace s "\\" "/")
+    s))
+
+(defn export-ns-sym [sym]
+  (let [m (meta sym)
+        raw (:raw-name m)]
+    (if (and raw (string? raw))
+      raw sym)))
+
+(def ^:dynamic *ctx* nil)
+
+(defn log [& xs]
+  (.println System/err (str/join " " xs)))
+
+;; MOVA-PATCH: `pprint/print-table` -> `prn` (no clojure.pprint on Mova
+;; yet, see the require above); this is a debug/introspection helper, not
+;; on any lint code path, so the exact tabular formatting doesn't matter.
+(defn where-am-i
+  ([] (where-am-i 10))
+  ([depth]
+   (let [ks [:fileName :lineNumber :className]]
+     (prn (map (comp #(select-keys % ks) bean)
+               (take depth (.getStackTrace (Thread/currentThread))))))))
+
+(defn ->uri [jar entry file]
+  (cond file (when (fs/exists? file)
+               (str (.toURI (fs/file file))))
+        (and jar entry)
+        (str "jar:" (.toURI (io/file jar)) "!/" entry)))
+
+(defn file-ext [fn]
+  (when-let [last-dot (str/last-index-of fn ".")]
+    (subs fn (inc last-dot))))
+
+(defn strip-file-ext [fn]
+  (if-let [last-dot (str/last-index-of fn ".")]
+    (subs fn 0 last-dot)
+    fn))
+
+(defn lint-condition?
+  "True when this expression or call sits in a condition that is linted."
+  [x]
+  (true? (:condition x)))
+
+(defn ctx-with-linter-disabled [ctx linter]
+  (assoc-in ctx [:config :linters linter :level] :off))
+
+(defn ctx-with-linters-disabled [ctx linters]
+  (let [config (get ctx :config)
+        linters-config (get config :linters)
+        linters-config (reduce (fn [linters linter]
+                                 (assoc-in linters [linter :level] :off))
+                               linters-config linters)
+        config (assoc config :linters linters-config)
+        ctx (assoc ctx :config config)]
+    ctx))
+
+(defn reg-call [ctx call id]
+  (when id
+    (swap! (:calls-by-id ctx) assoc id call))
+  nil)
+
+(defn update-vals
+  "m f => {k (f v) ...}
+
+  Given a map m and a function f of 1-argument, returns a new map where the keys of m
+  are mapped to result of applying f to the corresponding values of m."
+  {:added "1.11"}
+  [m f]
+  (with-meta
+    (persistent!
+     (reduce-kv (fn [acc k v] (assoc! acc k (f v)))
+                ;; MOVA-PATCH: no clojure.lang.IEditableCollection on Mova --
+                ;; all Mova maps except sorted-maps support transient, so
+                ;; mirror the real semantics via `sorted?` instead.
+                (if (sorted? m)
+                  (transient {})
+                  (transient m))
+                m))
+    (meta m)))
+
+(defn mark-generate [node]
+  (assoc node :clj-kondo.impl/generated true))
+
+(defn format-callstack [ctx]
+  (mapv (fn [[ns var]]
+          {:ns ns
+           :name var})
+        (:callstack ctx)))
+
+(defn ignored? [expr linter]
+  (when-let [{:keys [linters] :as ignore} (:clj-kondo/ignore (meta expr))]
+    (or (identical? :all linters)
+        (true? ignore)
+        (if linters
+          (some #(identical? linter (:k %)) (:children linters))
+          (some #(identical? linter %) ignore)))))
+
+(let [not-found (Object.)]
+  (defn memoize'
+    "A more efficient version of `clojure.core/memoize` that is only restricted to
+  1- and 2-arity functions."
+    [f]
+    (let [mem (atom {})]
+      (fn
+        ([arg]
+         (let [val (get @mem arg not-found)]
+           (if (identical? val not-found)
+             (let [ret (f arg)]
+               (swap! mem assoc arg ret)
+               ret)
+             val)))
+        ([arg1 arg2]
+         (let [val (get (get @mem arg1) arg2 not-found)]
+           (if (identical? val not-found)
+             (let [ret (f arg1 arg2)]
+               (swap! mem update arg1 assoc arg2 ret)
+               ret)
+             val)))))))
+
+;;;; MOVA-PATCH (M7): slim var-usage :expr. A usage's :expr is the call's node,
+;; so the usages in :namespaces kept every file's whole AST alive until the end
+;; lints (no GC on Mova). Readers of (:expr usage) after analysis, all in linters:
+;;   node->line / (meta expr) :skip-analysis     -> expr's meta
+;;   :clj-kondo.impl/generated (incl. discouraged-var) -> that key
+;;   lint-is-message-not-string!                 -> 3rd child: literal string?, meta
+;;   lint-unresolved-vars! (usage re-registered)  -> str of 1st child, else of expr
+;;   lint-specific-calls! (cond/if-let/get-in.., if) -> the node's children and
+;;     of each child: meta, :value/:k (incl. `find`), tag, :generated; below that
+;;     only via constant? (all of a :vector/:set/:map/:namespaced-map) and
+;;     lint-single-key-in (a :vector's children).
+;; The last reader's dispatch table lives here, so which usages keep their
+;; children is decided by that reader's own table.
+
+(def specific-call-children-linters
+  "[ns name] -> which children reader lint-specific-calls! runs for that var."
+  '{[clojure.core cond] :cond, [cljs.core cond] :cond
+    [clojure.core if-let] :if-like, [clojure.core if-not] :if-like, [clojure.core if-some] :if-like
+    [cljs.core if-let] :if-like, [cljs.core if-not] :if-like, [cljs.core if-some] :if-like
+    [clojure.core get-in] :key-in, [clojure.core assoc-in] :key-in, [clojure.core update-in] :key-in
+    [cljs.core get-in] :key-in, [cljs.core assoc-in] :key-in, [cljs.core update-in] :key-in})
+
+(def special-if-name
+  "lint-specific-calls! also reads the children of any usage named `if` (special form)."
+  'if)
+
+(def is-message-names
+  "lint-is-message-not-string! reads the 3rd child of calls to these vars' name."
+  '#{is})
+
+(def ^:private full-expr-names
+  (into #{special-if-name} (map second) (keys specific-call-children-linters)))
+
+(def ^:private deep-child-tags
+  "Children read below the first level (constant?, lint-single-key-in): kept whole."
+  #{:vector :set :map :namespaced-map})
+
+(defn- shallow-child [child]
+  (if (and (some? (:children child)) (not (contains? deep-child-tags (tag child))))
+    (assoc child :children nil)
+    child))
+
+(defn slim-usage-expr
+  "The :expr stored with a var usage in :namespaces: the node with shallow
+  children when lint-specific-calls! may read them (by name: the resolved var
+  is only known at lint time and carries the call's name); else an empty map
+  with the node's meta and :clj-kondo.impl/generated, plus for `is` what
+  lint-is-message-not-string! reads of the message arg."
+  [usage]
+  (let [expr (:expr usage)
+        nm (:name usage)]
+    (cond
+      ;; a childless node (token) holds no subtree: kept as is
+      (or (nil? expr) (nil? (:children expr))) usage
+      (contains? full-expr-names nm)
+      (if-let [children (seq (:children expr))]
+        ;; 1st child kept whole: lint-unresolved-vars! prints it
+        (assoc usage :expr (assoc expr :children (into [(first children)] (map shallow-child) (rest children))))
+        usage)
+      :else
+      (let [gen (:clj-kondo.impl/generated expr)
+            fst (first (:children expr))
+            slim (cond-> (cond
+                           (nil? fst) {::expr-str (str expr)}
+                           (nil? (:children fst)) {::first-child fst}
+                           :else {::first-child-str (str fst)})
+                   gen (assoc :clj-kondo.impl/generated gen)
+                   (contains? is-message-names nm)
+                   (assoc ::is-message-arg
+                          (let [arg (nth (:children expr) 2 nil)]
+                            {:literal-string? (boolean (or (:lines arg) (= :multi-line (tag arg))))
+                             :meta (meta arg)})))]
+        (assoc usage :expr (with-meta slim (meta expr)))))))
+
+;; MOVA-PATCH (M7): a stored usage as a plain map without its nil fields. On
+;; Mova a VarUsage record is a 39-entry map (~3.2 KB); lib/ keeps ~40k of them
+;; until the end lints. Readers only look fields up by keyword, except these
+;; select-keys (a present nil key is copied, an absent one is not):
+;; utils/location, linters (select-keys call [:filename]), types/lint-arg-types.
+(def ^:private usage-select-keys
+  #{:filename :row :col :end-row :end-col :type :lang :base-lang :resolved-ns :ns :name :arity})
+
+(defn compact-usage [usage]
+  (let [m (persistent!
+           (reduce-kv (fn [m k v]
+                        (if (or (some? v) (contains? usage-select-keys k)) (assoc! m k v) m))
+                      (transient {}) usage))]
+    (if-let [mt (meta usage)] (with-meta m mt) m)))
+
+;;;; Scratch
+
+(comment
+  (false? (node/sexpr (parse-string "false")))
+  (false? (node/sexpr (parse-string "nil")))
+  (constant? (parse-string "foo"))
+  (map-node-vals (parse-string "{:a 1 :b 2}"))
+  (assoc-some {} :a 1 :b nil :c false)
+  (select-some {:a 1 :b nil :c 2 :d false} [:a :b :d]) ;; => {:a 1, :d false}
+  (tag (parse-string "\"x
+
+y\""))
+  (tag (parse-string "\"xy\""))
+  (map-node-get-value-node (p/parse-string "{:binky 2 :arglists #_ :ha '([a b c]) :boingo 4}")
+                           :arglists))

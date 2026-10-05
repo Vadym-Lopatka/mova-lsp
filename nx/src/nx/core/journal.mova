@@ -1,0 +1,77 @@
+;; nx.core.journal — the per-event journal (NX_OBS=1). Pure: rows -> text lines. a sample project's `log-line`
+;; idea: one sanitized, compact EDN map per line, newline-terminated, plain data only. Main writes the lines at a quiet
+;; drain, from the rows the fold built (nx.core.latency, `:jr`); nothing here runs at an edge or in a proc.
+;;   row = {:t tap-clock-ns | :at wall-ms, :tel/kind .., :op .., :id .., :outcome .., :m/inject-us .., :bytes .., :uri ..}
+;; A uri is kept in clear (a local file on the owner's machine); document text and params are never in a row.
+(ns nx.core.journal
+  (:require [clojure.string :as str]))
+
+(def max-bytes
+  "A journal file is rotated to <name>.log.1 (one kept, the older one is replaced) before it would pass this."
+  8000000)
+
+(defn rotate?
+  "True when adding `add` bytes to a file of `cur` bytes would pass `limit` (and the file is not empty)."
+  [cur add limit]
+  (and (pos? cur) (> (+ cur add) limit)))
+
+(def ^:private order
+  [:at :tel/kind :obs/kind :op :id :outcome :m/inject-us :bytes :uri :phase :count :by])
+
+(defn- plain? [x]
+  (or (nil? x) (keyword? x) (number? x) (boolean? x) (and (string? x) (<= (count x) 400))))
+
+(defn- clean
+  "v when it is plain data: a scalar, or a map of scalars/maps at most `depth` deep. nil otherwise (so it is left out)."
+  [v depth]
+  (cond
+    (plain? v) v
+    (and (map? v) (pos? depth))
+    (let [m (into {} (keep (fn [[k x]] (when (or (keyword? k) (string? k))
+                                         (let [c (clean x (dec depth))] (when (some? c) [k c])))))
+                  v)]
+      (when (seq m) m))
+    :else nil))
+
+(defn line
+  "One journal line for a row that has :at: keys in a fixed order (the common ones first, the rest sorted), nil
+  values and anything that is not plain data left out, sanitized, newline-terminated."
+  [row]
+  (let [rest-keys (sort-by str (remove (set order) (keys row)))
+        ks (concat (filter #(contains? row %) order) rest-keys)
+        kvs (keep (fn [k] (let [v (clean (get row k) 2)] (when (some? v) (str (pr-str k) " " (pr-str v))))) ks)]
+    (str "{" (str/join " " kvs) "}\n")))
+
+(defn wall-ms
+  "Wall ms of tap-clock time t, given [base-ms base-ns] read together."
+  [[base-ms base-ns] t]
+  (- base-ms (quot (- base-ns t) 1000000)))
+
+(defn text
+  "The lines of rows, in time order. A row has :t (tap clock, ns) or :at (wall ms); base = [base-ms base-ns]."
+  [base rows]
+  (let [at (fn [r] (if-let [t (:t r)] (assoc (dissoc r :t) :at (wall-ms base t)) r))]
+    (apply str (map line (sort-by #(or (:at %) 0) (map at rows))))))
+
+(defn- stage-brief [s] (select-keys s [:count :sum-us :max-us]))
+
+(defn native-rows
+  "Journal rows for one mova.nx/met-take! delta: one :job row per job op (its stages as count/sum/max, no buckets,
+  at wall `now`), one :pass row per project pass (its spans in us and counters, at the pass's end)."
+  [nat now]
+  (into (vec (for [[op e] (:jobs nat)]
+               {:at now :tel/kind :job :op op :count (:count e) :bytes (:bytes e)
+                :stages (into {} (map (fn [[k s]] [k (stage-brief s)])) (:stages e))}))
+        (for [p (:passes nat)]
+          {:t (:end-ns p) :tel/kind :pass :op "bg/pass" :stages (:stages p) :n (:n p)})))
+
+(defn error-row
+  "Journal row of one flow error message (nx.core.obs/flow->msg: pid, op, cid, method, one line; never text)."
+  [msg now]
+  (assoc msg :at now))
+
+(defn lost-row
+  "Row for taps the edges dropped since the last row: by = {:in n :out n}; nil when none."
+  [by now]
+  (let [by (into {} (filter (fn [[_ n]] (pos? n))) by)]
+    (when (seq by) {:at now :tel/kind :lost :count (reduce + (vals by)) :by by})))

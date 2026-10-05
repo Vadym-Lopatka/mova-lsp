@@ -1,0 +1,618 @@
+{
+ "src/app/main.clj:0:1:completion": [
+  "ns",
+  "ns-aliases",
+  "ns-imports",
+  "ns-interns",
+  "ns-map",
+  "ns-name",
+  "ns-publics",
+  "ns-refers",
+  "ns-resolve",
+  "ns-unalias",
+  "ns-unmap"
+ ],
+ "src/app/main.clj:0:1:definition": null,
+ "src/app/main.clj:0:1:hover": null,
+ "src/app/main.clj:0:1:references": [],
+ "src/app/main.clj:0:4:completion": [
+  "app.main",
+  "app.main/-main",
+  "app.main/clj-files",
+  "app.main/run-echo"
+ ],
+ "src/app/main.clj:0:4:definition": "project:src/app/main.clj:0",
+ "src/app/main.clj:0:4:hover": "app.main",
+ "src/app/main.clj:0:4:references": [
+  "project:src/app/main.clj:0"
+ ],
+ "src/app/main.clj:11:16:completion": [
+  "msg"
+ ],
+ "src/app/main.clj:11:16:definition": "project:src/app/main.clj:11",
+ "src/app/main.clj:11:16:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:11:16:references": [
+  "project:src/app/main.clj:11",
+  "project:src/app/main.clj:12",
+  "project:src/app/main.clj:13"
+ ],
+ "src/app/main.clj:11:6:completion": [
+  "run-echo"
+ ],
+ "src/app/main.clj:11:6:definition": "project:src/app/main.clj:11",
+ "src/app/main.clj:11:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:11:6:references": [
+  "project:src/app/main.clj:11",
+  "project:src/app/main.clj:18"
+ ],
+ "src/app/main.clj:12:16:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:234",
+ "src/app/main.clj:12:16:hover": "(clojure.string/trim [s])",
+ "src/app/main.clj:12:16:references": [
+  "jar:clojure-1.12.6.jar!/clojure/string.clj:234",
+  "project:src/app/main.clj:12",
+  "project:src/app/main.clj:14"
+ ],
+ "src/app/main.clj:12:3:completion": [
+  "let",
+  "letfn"
+ ],
+ "src/app/main.clj:12:3:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:4526",
+ "src/app/main.clj:12:3:hover": "(clojure.core/let [bindings & body])",
+ "src/app/main.clj:12:3:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:34",
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:4526",
+  "project:src/app/main.clj:12"
+ ],
+ "src/app/main.clj:12:8:definition": "project:src/app/main.clj:12",
+ "src/app/main.clj:12:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "src/app/main.clj:12:8:references": [
+  "project:src/app/main.clj:12"
+ ],
+ "src/app/main.clj:13:14:definition": "jar:process-0.6.25.jar!/babashka/process.cljc:452",
+ "src/app/main.clj:13:14:hover": "(babashka.process/process [opts? & args])",
+ "src/app/main.clj:13:14:references": [
+  "jar:process-0.6.25.jar!/babashka/process.cljc:452",
+  "project:src/app/main.clj:13"
+ ],
+ "src/app/main.clj:13:42:definition": "project:src/app/main.clj:13",
+ "src/app/main.clj:13:42:hover": "calling: (babashka.process/process [opts? & args])",
+ "src/app/main.clj:13:42:references": [
+  "project:src/app/main.clj:13",
+  "project:src/app/main.clj:14"
+ ],
+ "src/app/main.clj:13:47:definition": "project:src/app/main.clj:13",
+ "src/app/main.clj:13:47:hover": "calling: (babashka.process/process [opts? & args])",
+ "src/app/main.clj:13:47:references": [
+  "project:src/app/main.clj:13"
+ ],
+ "src/app/main.clj:13:8:definition": "project:src/app/main.clj:13",
+ "src/app/main.clj:13:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "src/app/main.clj:13:8:references": [
+  "project:src/app/main.clj:13",
+  "project:src/app/main.clj:14"
+ ],
+ "src/app/main.clj:14:28:definition": "project:src/app/util.clj:4",
+ "src/app/main.clj:14:28:hover": "calling: (clojure.core/-> [x & forms])",
+ "src/app/main.clj:14:28:references": [
+  "project:src/app/main.clj:14",
+  "project:src/app/util.clj:4"
+ ],
+ "src/app/main.clj:14:5:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:1697",
+ "src/app/main.clj:14:5:hover": "(clojure.core/-> [x & forms])",
+ "src/app/main.clj:14:5:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:1697",
+  "project:src/app/main.clj:14"
+ ],
+ "src/app/main.clj:16:15:definition": "project:src/app/main.clj:16",
+ "src/app/main.clj:16:15:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:16:15:references": [
+  "project:src/app/main.clj:16"
+ ],
+ "src/app/main.clj:16:6:definition": "project:src/app/main.clj:16",
+ "src/app/main.clj:16:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:16:6:references": [
+  "project:src/app/main.clj:16"
+ ],
+ "src/app/main.clj:17:12:definition": "project:src/app/util.clj:7",
+ "src/app/main.clj:17:12:hover": "(app.util/to-json [m])",
+ "src/app/main.clj:17:12:references": [
+  "project:src/app/main.clj:17",
+  "project:src/app/util.clj:7"
+ ],
+ "src/app/main.clj:17:26:definition": "project:src/app/main.clj:17",
+ "src/app/main.clj:17:26:hover": "calling: (app.util/to-json [m])",
+ "src/app/main.clj:17:26:references": [
+  "project:src/app/main.clj:17"
+ ],
+ "src/app/main.clj:17:3:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:3762",
+ "src/app/main.clj:17:3:hover": "(clojure.core/println [& more])",
+ "src/app/main.clj:17:3:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:3762",
+  "project:src/app/main.clj:17"
+ ],
+ "src/app/main.clj:18:26:definition": "project:src/app/main.clj:18",
+ "src/app/main.clj:18:26:hover": "calling: (app.util/to-json [m])",
+ "src/app/main.clj:18:26:references": [
+  "project:src/app/main.clj:18"
+ ],
+ "src/app/main.clj:1:13:completion": [
+  "app.util"
+ ],
+ "src/app/main.clj:1:13:definition": "project:src/app/util.clj:0",
+ "src/app/main.clj:1:13:hover": "calling: (:require)",
+ "src/app/main.clj:1:13:references": [
+  "project:src/app/main.clj:1"
+ ],
+ "src/app/main.clj:1:22:definition": "project:src/app/main.clj:1",
+ "src/app/main.clj:1:22:hover": "calling: (:require)",
+ "src/app/main.clj:1:22:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/main.clj:2",
+  "project:src/app/main.clj:3",
+  "project:src/app/main.clj:4",
+  "project:src/app/util.clj:1",
+  "project:src/app/util.clj:2"
+ ],
+ "src/app/main.clj:1:26:completion": [],
+ "src/app/main.clj:1:26:definition": "project:src/app/util.clj:0",
+ "src/app/main.clj:1:26:hover": "calling: (:require)",
+ "src/app/main.clj:1:26:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/main.clj:14",
+  "project:src/app/main.clj:17"
+ ],
+ "src/app/main.clj:1:3:definition": "project:src/app/main.clj:1",
+ "src/app/main.clj:1:3:hover": "require",
+ "src/app/main.clj:1:3:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/main.clj:2:13:completion": [
+  "babashka.fs"
+ ],
+ "src/app/main.clj:2:13:definition": "jar:fs-0.5.34.jar!/babashka/fs.cljc:0",
+ "src/app/main.clj:2:13:hover": "calling: (:require)",
+ "src/app/main.clj:2:13:references": [
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:9",
+  "jar:process-0.6.25.jar!/babashka/process.cljc:4",
+  "project:src/app/main.clj:2"
+ ],
+ "src/app/main.clj:2:29:completion": [],
+ "src/app/main.clj:2:29:definition": "jar:fs-0.5.34.jar!/babashka/fs.cljc:0",
+ "src/app/main.clj:2:29:hover": "calling: (:require)",
+ "src/app/main.clj:2:29:references": [
+  "project:src/app/main.clj:2",
+  "project:src/app/main.clj:7",
+  "project:src/app/main.clj:8"
+ ],
+ "src/app/main.clj:3:13:completion": [
+  "babashka.process",
+  "babashka.process.pprint"
+ ],
+ "src/app/main.clj:3:13:definition": "jar:process-0.6.25.jar!/babashka/process.cljc:0",
+ "src/app/main.clj:3:13:hover": "calling: (:require)",
+ "src/app/main.clj:3:13:references": [
+  "jar:process-0.6.25.jar!/babashka/process/pprint.clj:1",
+  "project:src/app/main.clj:3"
+ ],
+ "src/app/main.clj:3:34:completion": [],
+ "src/app/main.clj:3:34:definition": "jar:process-0.6.25.jar!/babashka/process.cljc:0",
+ "src/app/main.clj:3:34:hover": "calling: (:require)",
+ "src/app/main.clj:3:34:references": [
+  "project:src/app/main.clj:13",
+  "project:src/app/main.clj:3"
+ ],
+ "src/app/main.clj:4:13:completion": [
+  "clojure.string"
+ ],
+ "src/app/main.clj:4:13:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:40",
+ "src/app/main.clj:4:13:hover": "calling: (:require)",
+ "src/app/main.clj:4:13:references": [
+  "jar:babashka.curl-0.1.2.jar!/babashka/curl.clj:3",
+  "jar:cli-0.12.91.jar!/babashka/cli.cljc:8",
+  "jar:cli-0.12.91.jar!/babashka/cli/exec.clj:4",
+  "jar:clojure-1.12.6.jar!/clojure/core/server.clj:11",
+  "jar:clojure-1.12.6.jar!/clojure/java/browse.clj:13",
+  "jar:clojure-1.12.6.jar!/clojure/java/io.clj:12",
+  "jar:clojure-1.12.6.jar!/clojure/test.clj:236",
+  "jar:clojure-1.12.6.jar!/clojure/tools/deps/interop.clj:13",
+  "jar:core.match-1.0.0.jar!/clojure/core/match/java.clj:3",
+  "jar:data.csv-1.0.0.jar!/clojure/data/csv.clj:11",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/js/name.cljs:10",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/emit.clj:17",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/name.clj:11",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/parse.clj:9",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/name.cljc:17",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/name.cljc:9",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/process.clj:13",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/pu_map.cljc:18",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/spec.cljc:8",
+  "jar:encore-3.153.1.jar!/taoensso/encore.cljc:79",
+  "jar:encore-3.153.1.jar!/taoensso/encore.cljc:88",
+  "jar:encore-3.153.1.jar!/taoensso/encore/signals.cljc:11",
+  "jar:encore-3.153.1.jar!/taoensso/encore/stats.cljc:4",
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:22",
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:29",
+  "jar:hiccup-2.0.0.jar!/hiccup/compiler.clj:3",
+  "jar:hiccup-2.0.0.jar!/hiccup/util.clj:2",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/interceptors.clj:6",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/internal.clj:8",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/internal/helpers.clj:2",
+  "jar:http-kit-2.9.0-beta4.jar!/org/httpkit/client.clj:3",
+  "jar:http-kit-2.9.0-beta4.jar!/org/httpkit/server.clj:2",
+  "jar:markdown-0.7.225.jar!/nextjournal/markdown/impl/extensions.clj:1",
+  "jar:markdown-0.7.225.jar!/nextjournal/markdown/impl/utils.cljc:3",
+  "jar:ordered-1.15.12.jar!/flatland/ordered/map.clj:3",
+  "jar:ordered-1.15.12.jar!/flatland/ordered/set.clj:2",
+  "jar:pretty-3.6.3.jar!/clj_commons/ansi.clj:7",
+  "jar:pretty-3.6.3.jar!/clj_commons/format/exceptions.clj:4",
+  "jar:pretty-3.6.3.jar!/clj_commons/format/table.clj:21",
+  "jar:process-0.6.25.jar!/babashka/process.cljc:6",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/coercer.cljc:29",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/fn.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/protocols.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/stringz.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/paredit.cljc:7",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/parser/string.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/reader.cljc:2",
+  "jar:selmer-1.13.5.jar!/selmer/filter_parser.clj:17",
+  "jar:selmer-1.13.5.jar!/selmer/filters.clj:5",
+  "jar:selmer-1.13.5.jar!/selmer/parser.clj:11",
+  "jar:selmer-1.13.5.jar!/selmer/tags.clj:3",
+  "jar:selmer-1.13.5.jar!/selmer/template_parser.clj:9",
+  "jar:selmer-1.13.5.jar!/selmer/util.clj:3",
+  "jar:selmer-1.13.5.jar!/selmer/validator.clj:5",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/alpha.clj:19",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/test/alpha.clj:14",
+  "jar:test.check-1.1.1.jar!/clojure/test/check/generators.cljc:16",
+  "jar:test.check-1.1.1.jar!/clojure/test/check/generators.cljc:20",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre.cljc:5",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/community/android_logcat.clj:5",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/community/irclj.clj:4",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/core.cljc:6",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/postal.clj:5",
+  "jar:tools.analyzer.jvm-1.3.2.jar!/clojure/tools/analyzer/jvm/utils.clj:12",
+  "jar:tools.cli-1.4.256.jar!/clojure/tools/cli.cljc:11",
+  "jar:tools.logging-1.3.0.jar!/clojure/tools/logging.clj:22",
+  "jar:tools.reader-1.6.0.jar!/cljs/tools/reader/impl/errors.cljs:10",
+  "jar:tools.reader-1.6.0.jar!/cljs/tools/reader/impl/utils.cljs:11",
+  "jar:transit-clj-1.1.357.jar!/cognitect/transit.clj:18",
+  "other:<HOME>/.gitlibs/libs/babashka/babashka.core/52a6037bd4b632bffffb04394fb4efd0cdab6b1e/src/babashka/core.clj:1",
+  "other:<HOME>/.gitlibs/libs/babashka/ffi/18e1ea1b13b0c6e2e8c170ee60628829c88aecbb/src/babashka/ffi.clj:83",
+  "project:src/app/main.clj:4",
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/main.clj:4:32:completion": [],
+ "src/app/main.clj:4:32:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:40",
+ "src/app/main.clj:4:32:hover": "calling: (:require)",
+ "src/app/main.clj:4:32:references": [
+  "project:src/app/main.clj:12",
+  "project:src/app/main.clj:14",
+  "project:src/app/main.clj:4"
+ ],
+ "src/app/main.clj:6:17:completion": [
+  "dir"
+ ],
+ "src/app/main.clj:6:17:definition": "project:src/app/main.clj:6",
+ "src/app/main.clj:6:17:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:6:17:references": [
+  "project:src/app/main.clj:6",
+  "project:src/app/main.clj:7",
+  "project:src/app/main.clj:8"
+ ],
+ "src/app/main.clj:6:1:completion": [
+  "defn",
+  "defn-"
+ ],
+ "src/app/main.clj:6:1:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:293",
+ "src/app/main.clj:6:1:hover": "(clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:6:1:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:293",
+  "project:src/app/main.clj:11",
+  "project:src/app/main.clj:16",
+  "project:src/app/main.clj:6",
+  "project:src/app/util.clj:10",
+  "project:src/app/util.clj:4",
+  "project:src/app/util.clj:7"
+ ],
+ "src/app/main.clj:6:6:completion": [
+  "clj-files"
+ ],
+ "src/app/main.clj:6:6:definition": "project:src/app/main.clj:6",
+ "src/app/main.clj:6:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/main.clj:6:6:references": [
+  "project:src/app/main.clj:17",
+  "project:src/app/main.clj:6"
+ ],
+ "src/app/main.clj:7:3:completion": [
+  "if",
+  "if-let",
+  "if-not",
+  "if-some",
+  "ifn?"
+ ],
+ "src/app/main.clj:7:3:definition": null,
+ "src/app/main.clj:7:3:hover": "(if test then else?)",
+ "src/app/main.clj:7:3:references": [
+  "project:src/app/main.clj:7"
+ ],
+ "src/app/main.clj:7:7:completion": [
+  "fs/exists?",
+  "fs/exists?"
+ ],
+ "src/app/main.clj:7:7:definition": "jar:fs-0.5.34.jar!/babashka/fs.cljc:273",
+ "src/app/main.clj:7:7:hover": "(babashka.fs/exists? [path] [path {:keys [:nofollow-links]}])",
+ "src/app/main.clj:7:7:references": [
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:182",
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:273",
+  "project:src/app/main.clj:7"
+ ],
+ "src/app/main.clj:8:14:completion": [
+  "fs/glob",
+  "fs/glob->regex"
+ ],
+ "src/app/main.clj:8:14:definition": "jar:fs-0.5.34.jar!/babashka/fs.cljc:703",
+ "src/app/main.clj:8:14:hover": "(babashka.fs/glob [root-dir pattern] [root-dir pattern opts])",
+ "src/app/main.clj:8:14:references": [
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:703",
+  "project:src/app/main.clj:8"
+ ],
+ "src/app/main.clj:8:5:completion": [
+  "map",
+  "map-entry?",
+  "map-indexed",
+  "map?",
+  "mapcat",
+  "mapv"
+ ],
+ "src/app/main.clj:8:5:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:2747",
+ "src/app/main.clj:8:5:hover": "(clojure.core/map [f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & colls])",
+ "src/app/main.clj:8:5:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:1729",
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:2747",
+  "project:src/app/main.clj:8"
+ ],
+ "src/app/main.clj:diagnostics": [
+  "12:8:unused-binding"
+ ],
+ "src/app/util.clj:0:1:completion": [
+  "ns",
+  "ns-aliases",
+  "ns-imports",
+  "ns-interns",
+  "ns-map",
+  "ns-name",
+  "ns-publics",
+  "ns-refers",
+  "ns-resolve",
+  "ns-unalias",
+  "ns-unmap"
+ ],
+ "src/app/util.clj:0:1:definition": null,
+ "src/app/util.clj:0:1:hover": null,
+ "src/app/util.clj:0:1:references": [],
+ "src/app/util.clj:0:4:completion": [
+  "app.util",
+  "app.util",
+  "app.util/parse",
+  "app.util/shout",
+  "app.util/to-json"
+ ],
+ "src/app/util.clj:0:4:definition": "project:src/app/util.clj:0",
+ "src/app/util.clj:0:4:hover": "app.util",
+ "src/app/util.clj:0:4:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/util.clj:0"
+ ],
+ "src/app/util.clj:10:6:completion": [
+  "parse",
+  "parse-boolean",
+  "parse-double",
+  "parse-long",
+  "parse-uuid"
+ ],
+ "src/app/util.clj:10:6:definition": "project:src/app/util.clj:10",
+ "src/app/util.clj:10:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:10:6:references": [
+  "project:src/app/util.clj:10"
+ ],
+ "src/app/util.clj:11:3:completion": [
+  "json/parse-string",
+  "json/parse-string-strict"
+ ],
+ "src/app/util.clj:11:3:definition": "jar:cheshire-6.2.0.jar!/cheshire/core.clj:197",
+ "src/app/util.clj:11:3:hover": "(cheshire.core/parse-string [string] [string key-fn] [string key-fn array-coerce-fn])",
+ "src/app/util.clj:11:3:references": [
+  "jar:cheshire-6.2.0.jar!/cheshire/core.clj:197",
+  "project:src/app/util.clj:11"
+ ],
+ "src/app/util.clj:1:13:completion": [
+  "clojure.string"
+ ],
+ "src/app/util.clj:1:13:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:40",
+ "src/app/util.clj:1:13:hover": "calling: (:require)",
+ "src/app/util.clj:1:13:references": [
+  "jar:babashka.curl-0.1.2.jar!/babashka/curl.clj:3",
+  "jar:cli-0.12.91.jar!/babashka/cli.cljc:8",
+  "jar:cli-0.12.91.jar!/babashka/cli/exec.clj:4",
+  "jar:clojure-1.12.6.jar!/clojure/core/server.clj:11",
+  "jar:clojure-1.12.6.jar!/clojure/java/browse.clj:13",
+  "jar:clojure-1.12.6.jar!/clojure/java/io.clj:12",
+  "jar:clojure-1.12.6.jar!/clojure/test.clj:236",
+  "jar:clojure-1.12.6.jar!/clojure/tools/deps/interop.clj:13",
+  "jar:core.match-1.0.0.jar!/clojure/core/match/java.clj:3",
+  "jar:data.csv-1.0.0.jar!/clojure/data/csv.clj:11",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/js/name.cljs:10",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/emit.clj:17",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/name.clj:11",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/jvm/parse.clj:9",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/name.cljc:17",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/name.cljc:9",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/process.clj:13",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/pu_map.cljc:18",
+  "jar:data.xml-0.2.0-alpha11.jar!/clojure/data/xml/spec.cljc:8",
+  "jar:encore-3.153.1.jar!/taoensso/encore.cljc:79",
+  "jar:encore-3.153.1.jar!/taoensso/encore.cljc:88",
+  "jar:encore-3.153.1.jar!/taoensso/encore/signals.cljc:11",
+  "jar:encore-3.153.1.jar!/taoensso/encore/stats.cljc:4",
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:22",
+  "jar:fs-0.5.34.jar!/babashka/fs.cljc:29",
+  "jar:hiccup-2.0.0.jar!/hiccup/compiler.clj:3",
+  "jar:hiccup-2.0.0.jar!/hiccup/util.clj:2",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/interceptors.clj:6",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/internal.clj:8",
+  "jar:http-client-0.4.25.jar!/babashka/http_client/internal/helpers.clj:2",
+  "jar:http-kit-2.9.0-beta4.jar!/org/httpkit/client.clj:3",
+  "jar:http-kit-2.9.0-beta4.jar!/org/httpkit/server.clj:2",
+  "jar:markdown-0.7.225.jar!/nextjournal/markdown/impl/extensions.clj:1",
+  "jar:markdown-0.7.225.jar!/nextjournal/markdown/impl/utils.cljc:3",
+  "jar:ordered-1.15.12.jar!/flatland/ordered/map.clj:3",
+  "jar:ordered-1.15.12.jar!/flatland/ordered/set.clj:2",
+  "jar:pretty-3.6.3.jar!/clj_commons/ansi.clj:7",
+  "jar:pretty-3.6.3.jar!/clj_commons/format/exceptions.clj:4",
+  "jar:pretty-3.6.3.jar!/clj_commons/format/table.clj:21",
+  "jar:process-0.6.25.jar!/babashka/process.cljc:6",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/coercer.cljc:29",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/fn.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/protocols.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/node/stringz.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/paredit.cljc:7",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/parser/string.cljc:1",
+  "jar:rewrite-clj-1.2.57.jar!/rewrite_clj/reader.cljc:2",
+  "jar:selmer-1.13.5.jar!/selmer/filter_parser.clj:17",
+  "jar:selmer-1.13.5.jar!/selmer/filters.clj:5",
+  "jar:selmer-1.13.5.jar!/selmer/parser.clj:11",
+  "jar:selmer-1.13.5.jar!/selmer/tags.clj:3",
+  "jar:selmer-1.13.5.jar!/selmer/template_parser.clj:9",
+  "jar:selmer-1.13.5.jar!/selmer/util.clj:3",
+  "jar:selmer-1.13.5.jar!/selmer/validator.clj:5",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/alpha.clj:19",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/test/alpha.clj:14",
+  "jar:test.check-1.1.1.jar!/clojure/test/check/generators.cljc:16",
+  "jar:test.check-1.1.1.jar!/clojure/test/check/generators.cljc:20",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre.cljc:5",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/community/android_logcat.clj:5",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/community/irclj.clj:4",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/core.cljc:6",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/postal.clj:5",
+  "jar:tools.analyzer.jvm-1.3.2.jar!/clojure/tools/analyzer/jvm/utils.clj:12",
+  "jar:tools.cli-1.4.256.jar!/clojure/tools/cli.cljc:11",
+  "jar:tools.logging-1.3.0.jar!/clojure/tools/logging.clj:22",
+  "jar:tools.reader-1.6.0.jar!/cljs/tools/reader/impl/errors.cljs:10",
+  "jar:tools.reader-1.6.0.jar!/cljs/tools/reader/impl/utils.cljs:11",
+  "jar:transit-clj-1.1.357.jar!/cognitect/transit.clj:18",
+  "other:<HOME>/.gitlibs/libs/babashka/babashka.core/52a6037bd4b632bffffb04394fb4efd0cdab6b1e/src/babashka/core.clj:1",
+  "other:<HOME>/.gitlibs/libs/babashka/ffi/18e1ea1b13b0c6e2e8c170ee60628829c88aecbb/src/babashka/ffi.clj:83",
+  "project:src/app/main.clj:4",
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/util.clj:1:28:definition": "project:src/app/util.clj:1",
+ "src/app/util.clj:1:28:hover": "calling: (:require)",
+ "src/app/util.clj:1:28:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/main.clj:2",
+  "project:src/app/main.clj:3",
+  "project:src/app/main.clj:4",
+  "project:src/app/util.clj:1",
+  "project:src/app/util.clj:2"
+ ],
+ "src/app/util.clj:1:32:completion": [],
+ "src/app/util.clj:1:32:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:40",
+ "src/app/util.clj:1:32:hover": "calling: (:require)",
+ "src/app/util.clj:1:32:references": [
+  "project:src/app/util.clj:1",
+  "project:src/app/util.clj:5"
+ ],
+ "src/app/util.clj:1:3:definition": "project:src/app/util.clj:1",
+ "src/app/util.clj:1:3:hover": "require",
+ "src/app/util.clj:1:3:references": [
+  "project:src/app/main.clj:1",
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/util.clj:2:13:completion": [
+  "cheshire.core"
+ ],
+ "src/app/util.clj:2:13:definition": "jar:cheshire-6.2.0.jar!/cheshire/core.clj:0",
+ "src/app/util.clj:2:13:hover": "calling: (:require)",
+ "src/app/util.clj:2:13:references": [
+  "jar:cheshire-6.2.0.jar!/cheshire/custom.clj:5",
+  "jar:cheshire-6.2.0.jar!/cheshire/exact.clj:3",
+  "jar:cheshire-6.2.0.jar!/cheshire/experimental.clj:2",
+  "jar:timbre-6.8.0.jar!/taoensso/timbre/appenders/community/logstash.clj:5",
+  "project:src/app/util.clj:2"
+ ],
+ "src/app/util.clj:2:31:completion": [],
+ "src/app/util.clj:2:31:definition": "jar:cheshire-6.2.0.jar!/cheshire/core.clj:0",
+ "src/app/util.clj:2:31:hover": "calling: (:require)",
+ "src/app/util.clj:2:31:references": [
+  "project:src/app/util.clj:11",
+  "project:src/app/util.clj:2",
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:4:13:definition": "project:src/app/util.clj:4",
+ "src/app/util.clj:4:13:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:4:13:references": [
+  "project:src/app/util.clj:4",
+  "project:src/app/util.clj:5"
+ ],
+ "src/app/util.clj:4:1:completion": [
+  "defn",
+  "defn-"
+ ],
+ "src/app/util.clj:4:1:definition": "jar:clojure-1.12.6.jar!/clojure/core.clj:293",
+ "src/app/util.clj:4:1:hover": "(clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:4:1:references": [
+  "jar:clojure-1.12.6.jar!/clojure/core.clj:293",
+  "project:src/app/main.clj:11",
+  "project:src/app/main.clj:16",
+  "project:src/app/main.clj:6",
+  "project:src/app/util.clj:10",
+  "project:src/app/util.clj:4",
+  "project:src/app/util.clj:7"
+ ],
+ "src/app/util.clj:4:6:completion": [
+  "shout"
+ ],
+ "src/app/util.clj:4:6:definition": "project:src/app/util.clj:4",
+ "src/app/util.clj:4:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:4:6:references": [
+  "project:src/app/main.clj:14",
+  "project:src/app/util.clj:4"
+ ],
+ "src/app/util.clj:5:3:completion": [
+  "str/upper-case"
+ ],
+ "src/app/util.clj:5:3:definition": "jar:clojure-1.12.6.jar!/clojure/string.clj:206",
+ "src/app/util.clj:5:3:hover": "(clojure.string/upper-case [s])",
+ "src/app/util.clj:5:3:references": [
+  "jar:clojure-1.12.6.jar!/clojure/string.clj:206",
+  "project:src/app/util.clj:5"
+ ],
+ "src/app/util.clj:7:15:definition": "project:src/app/util.clj:7",
+ "src/app/util.clj:7:15:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:7:15:references": [
+  "project:src/app/util.clj:7",
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:7:6:completion": [
+  "to-json"
+ ],
+ "src/app/util.clj:7:6:definition": "project:src/app/util.clj:7",
+ "src/app/util.clj:7:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:7:6:references": [
+  "project:src/app/main.clj:17",
+  "project:src/app/util.clj:7"
+ ],
+ "src/app/util.clj:8:3:completion": [
+  "json/generate-string"
+ ],
+ "src/app/util.clj:8:3:definition": "jar:cheshire-6.2.0.jar!/cheshire/core.clj:48",
+ "src/app/util.clj:8:3:hover": "(cheshire.core/generate-string [obj] [obj opt-map])",
+ "src/app/util.clj:8:3:references": [
+  "jar:cheshire-6.2.0.jar!/cheshire/core.clj:48",
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:diagnostics": [
+  "10:6:clojure-lsp/unused-public-var"
+ ]
+}

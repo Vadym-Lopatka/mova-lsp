@@ -1,0 +1,102 @@
+;; LSP framing: Content-Length reader proc on stdin, writer proc on stdout. Both :io.
+(ns nx.rpc
+  (:require [clojure.string :as str]))
+
+(def ^:private in-ports :clojure.core.async.flow/in-ports)
+
+(defn- content-length [line]
+  (let [[h v] (str/split line #":\s*" 2)]
+    (when (and v (= "content-length" (str/lower-case h)))
+      (Long/parseLong (str/trim v)))))
+
+(defn read-frame
+  "Next parsed message off `in`, or ::eof. Skips unparsable frames."
+  [in]
+  (loop [len nil]
+    (let [line (mova.io/read-line-bytes in)]
+      (cond
+        (nil? line) ::eof
+        (str/blank? line)
+        (let [body (when len (mova.io/read-bytes in len))]
+          (if (nil? body)
+            ::eof
+            (let [m (try (mova.json/parse-string body true) (catch Exception _ nil))]
+              (if (map? m) m (recur nil)))))
+        :else (recur (or (content-length line) len))))))
+
+(def eof-msg {:jsonrpc "2.0" :method "exit" :nx/eof true})
+
+(defn reader-step
+  "IO proc. Init starts ONE OS thread that blocks on stdin and feeds :in; transform forwards to :out."
+  []
+  (flow/map->step
+   {:describe (fn [] {:ins {} :outs {:out {}}})
+    :init (fn [_]
+            (let [ch (chan 64)]
+              (thread
+                (loop []
+                  (let [m (read-frame System/in)]
+                    (if (= m ::eof)
+                      (>!! ch eof-msg)
+                      (do (>!! ch m) (recur))))))
+              {in-ports {:in ch}}))
+    :transform (fn [s _ msg] [s {:out [msg]}])}))
+
+(defn- pump-tapped
+  "Reader thread, metrics on: read-frame + the hand-off, with the two native edge calls. tap-read-bytes = read-bytes
+  + one clock stamp (t0, before the body is read); tap-in! (after the hand-off) stores t0, len and the keys of m."
+  [in ch]
+  (loop [len nil]
+    (let [line (mova.io/read-line-bytes in)]
+      (cond
+        (nil? line) (>!! ch eof-msg)
+        (str/blank? line)
+        (let [body (when len (mova.nx/tap-read-bytes in len))]
+          (if (nil? body)
+            (>!! ch eof-msg)
+            (let [m (try (mova.json/parse-string body true) (catch Exception _ nil))]
+              (when (map? m) (>!! ch m) (mova.nx/tap-in! len m))
+              (recur nil))))
+        :else (recur (or (content-length line) len))))))
+
+(defn reader-step-tapped
+  "reader-step with the metrics edge tap (picked once, at graph build)."
+  []
+  (flow/map->step
+   {:describe (fn [] {:ins {} :outs {:out {}}})
+    :init (fn [_]
+            (let [ch (chan 64)]
+              (thread (pump-tapped System/in ch))
+              {in-ports {:in ch}}))
+    :transform (fn [s _ msg] [s {:out [msg]}])}))
+
+(defn write-frame [out msg]
+  (let [content (or (:nx/raw msg) (mova.json/generate-string msg false))]
+    (mova.io/write-str out (str "Content-Length: " (mova.io/utf8-byte-count content) "\r\n\r\n" content))
+    (mova.io/flush out)))
+
+(defn writer-step
+  "IO proc. Owns stdout (and process exit: {:nx/exit code} is written after everything before it)."
+  []
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {}} :outs {}})
+    :transform (fn [s _ msg]
+                 (if-let [code (:nx/exit msg)]
+                   (System/exit code)
+                   (write-frame System/out msg))
+                 [s {}])}))
+
+(def ^:private exit-wait-ms 300)
+
+(defn writer-step-tapped
+  "writer-step with the metrics edge tap (picked once, at graph build): one native call after the flush (clock read,
+  key extraction and the coalesced bell are inside). Exit goes to main over exit-ch so it can fold what is pending;
+  the writer is the watchdog: main gets exit-wait-ms, then the writer exits."
+  [exit-ch]
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {}} :outs {}})
+    :transform (fn [s _ msg]
+                 (if-let [code (:nx/exit msg)]
+                   (do (offer! exit-ch code) (Thread/sleep exit-wait-ms) (System/exit code))
+                   (do (write-frame System/out msg) (mova.nx/tap-out! msg)))
+                 [s {}])}))

@@ -1,0 +1,615 @@
+(ns clojure-lsp.shared-test
+  (:require
+   [babashka.fs :as fs]
+   [clojure-lsp.shared :as shared]
+   [clojure-lsp.test-helper.internal :as h]
+   [clojure.test :refer [are deftest is testing]]
+   [medley.core :as medley])
+  (:import
+   java.net.URI))
+
+(h/reset-components-before-test)
+
+(deftest deep-merge
+  (testing "simple deep merge"
+    (is (= {:a {:b 2 :c 3}} (shared/deep-merge {:a {:b 2}} {:a {:c 3}}))))
+  (testing "concating colls"
+    (is (= {:a {:b [1 2 3 4] :c 3}} (shared/deep-merge {:a {:b [1 2]}} {:a {:b [3 4] :c 3}})))
+    (is (= {:a {:b [1 2 3 4] :c 3}} (shared/deep-merge {:a {:b #{1 2}}} {:a {:b [3 4] :c 3}})))
+    (is (= {:a {:b [1 2 4 3] :c 3}} (shared/deep-merge {:a {:b [1 2]}} {:a {:b #{3 4} :c 3}})))))
+
+(deftest external-filename?
+  (is (not (shared/external-filename? (h/file-path "/some/project/src/a.clj") #{(h/file-path "/some/project/src")})))
+  (is (not (shared/external-filename? (h/file-path "/some/project/src/a.clj") #{})))
+  (is (shared/external-filename? (h/file-path "/some/project/src/a.clj") #{(h/file-path "/some/project/src/b.clj")}))
+  (is (shared/external-filename? (h/file-path "/some/place/file.jar:some/path/to/file.clj") #{(h/file-path "/some/project/src/a.clj")}))
+  (is (shared/external-filename? (h/file-path "/some/place/file.jar:some/path/to/file.clj") #{}))
+  (is (shared/external-filename? (h/file-path "/some/place/file.jar:some/path/to/file.clj") #{(h/file-path "/some/place/file.jar:some/path")}))
+  (is (shared/external-filename? (h/file-path "/some/user/.emacs.d/.local/etc/workspace/.cache/something.cljc") #{(h/file-path "/some/place/file.clj")}))
+  (is (not (shared/external-filename? (h/file-path "/some/project/.lsp/config.edn") #{(h/file-path "/some/project/src")}))))
+
+(deftest uri->filename
+  (testing "should decode special characters in file URI"
+    (is (= (h/file-path "/path+/encoded characters!")
+           (shared/uri->filename (h/file-uri "file:///path%2B/encoded%20characters%21")))))
+  (testing "should handle unicode characters in a file URI"
+    (is (= (h/file-path "/home/foo/hôpital.clj")
+           (shared/uri->filename (h/file-uri "file:///home/foo/hôpital.clj")))))
+  (testing "when it is a jar via zipfile"
+    (is (= (h/file-path "/something.jar:something/file.cljc")
+           (shared/uri->filename (h/file-uri "zipfile:///something.jar::something/file.cljc")))))
+  (testing "when it is a jar via zipfile with encoding"
+    (is (= (h/file-path "/something.jar:something/file.cljc")
+           (shared/uri->filename (h/file-uri "zipfile:///something.jar%3A%3Asomething/file.cljc")))))
+  (testing "when it is a jar via jarfile"
+    (is (= (str (h/file-path "/Users/clojure-1.9.0.jar") ":clojure/string.clj")
+           (shared/uri->filename (h/file-uri "jar:file:///Users/clojure-1.9.0.jar!/clojure/string.clj")))))
+  (testing "Windows URIs"
+    (is (= (when h/windows? "C:\\c.clj")
+           (when h/windows? (shared/uri->filename "file:/c:/c.clj"))))
+    (is (= (when h/windows? "C:\\Users\\FirstName LastName\\c.clj")
+           (when h/windows? (shared/uri->filename "file:/c:/Users/FirstName%20LastName/c.clj"))))
+    (is (= (when h/windows? "C:\\c.clj")
+           (when h/windows? (shared/uri->filename "file:///c:/c.clj"))))))
+
+(deftest filename->uri
+  (testing "when it is not a jar"
+    (h/reset-components!)
+    (is (= (if h/windows?
+             "file:///C:/some%20project/foo/bar_baz.clj"
+             "file:///some%20project/foo/bar_baz.clj")
+           (shared/filename->uri (h/file-path "/some project/foo/bar_baz.clj") (h/db)))))
+  (testing "when it is a jar via zipfile"
+    (h/reset-components!)
+    (is (= (if h/windows?
+             "zipfile:///C:/home/some/.m2/some-jar.jar::clojure/core.clj"
+             "zipfile:///home/some/.m2/some-jar.jar::clojure/core.clj")
+           (shared/filename->uri (h/file-path "/home/some/.m2/some-jar.jar:clojure/core.clj") (h/db)))))
+  (testing "when it is a jar via jarfile"
+    (swap! (h/db*) shared/deep-merge {:settings {:dependency-scheme "jar"}})
+    (is (= (if h/windows?
+             "jar:file:///C:/home/some/.m2/some-jar.jar!/clojure/core.clj"
+             "jar:file:///home/some/.m2/some-jar.jar!/clojure/core.clj")
+           (shared/filename->uri (h/file-path "/home/some/.m2/some-jar.jar:clojure/core.clj") (h/db)))))
+  (testing "Windows URIs"
+    (h/reset-components!)
+    (is (= (when h/windows? "file:///C:/c.clj")
+           (when h/windows? (shared/filename->uri "C:\\c.clj" (h/db)))))))
+
+(deftest uri->namespace
+  (testing "when don't have a project root"
+    (h/reset-components!)
+    (is (nil? (shared/uri->namespace (h/file-uri "file:///user/project/src/foo/bar.clj") (h/db)))))
+  (testing "when it has a project root and not a source-path"
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "file:///user/project/bla")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (nil? (shared/uri->namespace (h/file-uri "file:///user/project/src/foo/bar.clj") (h/db)))))
+  (testing "when has to guess namespace from uri and there is no project root or source path"
+    (h/reset-components!)
+    (is (= "bar" (shared/uri->namespace (h/file-uri "file:///user/project/src/foo/bar.clj") (h/db) true))))
+  (testing "when has to guess namespace from uri and there is no project root or source path and uri has a space"
+    (h/reset-components!)
+    (is (= "bar" (shared/uri->namespace (h/file-uri "file:///user/project/%20src/foo/bar.clj") (h/db) true))))
+  (testing "when has to guess namespace from uri and there is no project root or source path and uri has a regex char"
+    (h/reset-components!)
+    (is (= "bar" (shared/uri->namespace (h/file-uri "file:///user/project/src+/foo/bar.clj") (h/db) true))))
+  (testing "when has to guess namespace from uri and there is a project root no source path"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar" (shared/uri->namespace (h/file-uri "file:///user/project/foo/bar.clj") (h/db) true))))
+
+  (testing "when has to guess namespace from uri and there is a source path that encompasses the uri"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:project-root-uri (h/file-uri "file:///path/to/Projects/clojure-lsp")
+                                      :settings {:source-paths [(h/file-path "/path/to/Projects/clojure-lsp/lib/src")]}})
+    (is (= "foo.a" (shared/uri->namespace (h/file-uri "file:///path/to/Projects/clojure-lsp/lib/src/foo/a.clj") (h/db) true))))
+
+  (testing "when has to guess namespace from uri and there is a project root with ending slash, but no source path"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true}
+                                      :project-root-uri (h/file-uri "file:///user/project/")})
+    (is (= "foo.bar" (shared/uri->namespace (h/file-uri "file:///user/project/foo/bar.clj") (h/db) true))))
+  (testing "when has to guess namespace from uri and there is a project root but file uri isn't in source paths"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user/project/bla")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar" (shared/uri->namespace (h/file-uri "file:///user/project/foo/bar.clj") (h/db) true))))
+  (testing "when has to guess namespace from uri and there is a project root with a uri that is inside the source paths"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user/project/src")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar" (shared/uri->namespace (h/file-uri "file:///user/project/src/foo/bar.clj") (h/db) true))))
+  (testing "when it has a project root and a source-path"
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user/project/src")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar"
+           (shared/uri->namespace (h/file-uri "file:///user/project/src/foo/bar.clj") (h/db)))))
+  (testing "when it has a project root with regex special chars and a source-path"
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user.+/project/src")}}
+                                      :project-root-uri (h/file-uri "file:///user.+/project")})
+    (is (= "foo.bar"
+           (shared/uri->namespace (h/file-uri "file:///user.+/project/src/foo/bar.clj") (h/db)))))
+  (testing "when it has a project root a source-path on mono repos"
+    (swap! (h/db*) medley/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user/project/src/clj")
+                                                                 (h/file-path "/user/project/src/cljs")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar"
+           (shared/uri->namespace (h/file-uri "file:///user/project/src/clj/foo/bar.clj") (h/db)))))
+  (testing "when it has a project root and nested source-paths"
+    (swap! (h/db*) shared/deep-merge {:settings {:auto-add-ns-to-new-files? true
+                                                 :source-paths #{(h/file-path "/user/project/src")
+                                                                 (h/file-path "/user/project/src/some")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (is (= "foo.bar"
+           (shared/uri->namespace (h/file-uri "file:///user/project/src/some/foo/bar.clj") (h/db)))))
+  (testing "when an invalid source-path with a valid source-path prefixing it"
+    (swap! (h/db*) medley/deep-merge {:settings {:source-paths #{(h/file-path "/user/project/src/clj")}}
+                                      :project-root-uri (h/file-uri "file:///user/project")})
+    (with-redefs [shared/directory? (constantly true)]
+      (is (= nil
+             (shared/uri->namespace (h/file-uri "file:///user/project/src/cljs/foo/bar.clj") (h/db)))))))
+
+(deftest conform-uri
+  (testing "lower case drive letter and encode colons"
+    (is (= "file:///c%3A/path"
+           (#'shared/conform-uri "file:///C:/path" {:encode-colons-in-path?   true
+                                                    :upper-case-drive-letter? false}))))
+  (testing "upper case drive letter and do not encode colons"
+    (is (= "file:///C:/path"
+           (#'shared/conform-uri "file:///c:/path" {:encode-colons-in-path?   false
+                                                    :upper-case-drive-letter? true})))))
+
+(deftest relativize-filepath
+  (is (= (h/file-path "some/path.clj")
+         (shared/relativize-filepath
+           (h/file-path "/User/rich/some/path.clj")
+           (h/file-path "/User/rich")))))
+
+(deftest join-filepaths
+  (is (= (h/file-path "/users/melon/toasty/onion")
+         (if h/windows?
+           (shared/join-filepaths (h/file-path "/users") "melon\\toasty" "onion")
+           (shared/join-filepaths (h/file-path "/users") "melon/toasty" "onion")))))
+
+(deftest ->range-test
+  (testing "should subtract 1 from row and col values"
+    (is (= {:start {:line      1
+                    :character 1}
+            :end   {:line      1
+                    :character 1}}
+           (shared/->range {:row 2 :end-row 2 :col 2 :end-col 2}))))
+  (testing "should not return negative line and character values"
+    (is (= {:start {:line      0
+                    :character 0}
+            :end   {:line      0
+                    :character 0}}
+           (shared/->range {:row 0 :end-row 0 :col 0 :end-col 0}))))
+  (testing "should tolerate elements without positions like java definitions"
+    (is (= {:start {:line      0
+                    :character 0}
+            :end   {:line      0
+                    :character 0}}
+           (shared/->range {:class "foo.Bar" :bucket :java-class-definitions})))))
+
+(def unescape-uri #'shared/unescape-uri)
+
+(deftest unescape-uri-test
+  (testing "URI should unescape."
+    (is (= "jar:file:///home/foo/bar.jar!baz.clj"
+           (unescape-uri "jar:file%3A///home/foo/bar.jar%21baz.clj"))))
+  (testing "URI should remain the same."
+    (is (= "file:///home/foo/bar.jar"
+           (unescape-uri "file:///home/foo/bar.jar"))))
+  (testing "URI should remain the same as IllegalArgumentException is thrown."
+    (is (= "file:///home/foo/bar.jar%%"
+           (unescape-uri "file:///home/foo/bar.jar%%")))))
+
+(def escape-uri #'shared/escape-uri)
+
+(deftest escape-uri-test
+  (testing "URI should be escaped"
+    (is (= (URI. "file:///home/foo/h%C3%B4pital.clj")
+           (escape-uri (URI. "file:///home/foo/hôpital.clj")))))
+  (testing "URI should remain the same"
+    (is (= (URI. "file:///home/foo/h%C3%B4pital.clj")
+           (escape-uri (URI. "file:///home/foo/h%C3%B4pital.clj"))))))
+
+(deftest inside?
+  (testing "when b has end scope"
+    (testing "when a outside before b"
+      (is (= false (shared/inside?
+                     {:name-row 1 :name-col 1}
+                     {:name-row 1 :name-col 2 :scope-end-row 1 :scope-end-col 4}))))
+    (testing "when a outside after b"
+      (is (= false (shared/inside?
+                     {:name-row 2 :name-col 2}
+                     {:name-row 1 :name-col 2 :scope-end-row 1 :scope-end-col 4}))))
+    (testing "when a inside b"
+      (is (= true (shared/inside?
+                    {:name-row 1 :name-col 3}
+                    {:name-row 1 :name-col 2 :scope-end-row 1 :scope-end-col 4})))))
+  (testing "when b doesn't have end scope"
+    (testing "when a outside before b"
+      (is (= false (shared/inside?
+                     {:name-row 1 :name-col 1}
+                     {:name-row 1 :name-col 2 :name-end-row 1 :name-end-col 4}))))
+    (testing "when a outside after b"
+      (is (= false (shared/inside?
+                     {:name-row 2 :name-col 2}
+                     {:name-row 1 :name-col 2 :name-end-row 1 :name-end-col 4}))))
+    (testing "when a inside b"
+      (is (= true (shared/inside?
+                    {:name-row 1 :name-col 3}
+                    {:name-row 1 :name-col 2 :name-end-row 1 :name-end-col 4}))))))
+
+(deftest namespace+source-path->filename
+  (is (= (h/file-path "/project/test/some/cool_ns.clj")
+         (shared/namespace+source-path->filename "some.cool-ns" (h/file-path "/project/test") :clj)))
+  (is (= (h/file-path "/project/test/some/cool_ns.clj")
+         (shared/namespace+source-path->filename "some.cool-ns" (h/file-path "/project/test/") :clj))))
+
+(deftest uri->source-paths
+  (is (= [(h/file-path "/dir/project/src")]
+         (shared/uri->source-paths (h/file-uri "file:///dir/project/src/clj/a/b.clj")
+                                   [(h/file-path "/dir/project/test") (h/file-path "/dir/project/src")])))
+  (testing "one source-path is a prefix of another"
+    (is (= [(h/file-path "/dir/project/src/cljs")]
+           (shared/uri->source-paths (h/file-uri "file:///dir/project/src/cljs/a/b.clj")
+                                     [(h/file-path "/dir/project/src/clj") (h/file-path "/dir/project/src/cljs")])))))
+
+(deftest jar-file?-test
+  (is (= false (shared/jar-file? "")))
+  (is (= false (shared/jar-file? "/foo")))
+  (is (= false (shared/jar-file? "/foo")))
+  (is (= false (shared/jar-file? "/foo/bar")))
+  (is (= false (shared/jar-file? "/foo/bar.clj")))
+  (is (= false (shared/jar-file? "/jar/bar.clj")))
+  (is (= true (shared/jar-file? "/foo/bar.jar")))
+  (is (= true (shared/jar-file? "/foo/bar.jar!/some/file.clj")))
+  (is (= true (shared/jar-file? "/foo/bar.jar!/some/file.jar")))
+  (is (= false (shared/jar-file? "file:///foo")))
+  (is (= false (shared/jar-file? "file:///foo")))
+  (is (= false (shared/jar-file? "file:///foo/bar")))
+  (is (= false (shared/jar-file? "file:///foo/bar.clj")))
+  (is (= false (shared/jar-file? "file:///jar/bar.clj")))
+  (is (= true (shared/jar-file? "file:///foo/bar.jar")))
+  (is (= true (shared/jar-file? "jar:file:///foo/bar.jar!/some/file.clj")))
+  (is (= true (shared/jar-file? "jar:file:///foo/bar.jar!/some/file.jar"))))
+
+(deftest class-file?-test
+  (is (= false (shared/class-file? "")))
+  (is (= false (shared/class-file? "/foo")))
+  (is (= false (shared/class-file? "/foo/bar")))
+  (is (= false (shared/class-file? "/foo/bar.clj")))
+  (is (= false (shared/class-file? "/foo/bar.jar")))
+  (is (= true (shared/class-file? "/foo/bar.class")))
+  (is (= false (shared/class-file? "/foo/bar.jar!/some/file.clj")))
+  (is (= true (shared/class-file? "/foo/bar.jar!/some/file.class")))
+  (is (= false (shared/class-file? "file:///foo")))
+  (is (= false (shared/class-file? "file:///foo/bar")))
+  (is (= false (shared/class-file? "file:///foo/bar.clj")))
+  (is (= false (shared/class-file? "file:///foo/bar.jar")))
+  (is (= true (shared/class-file? "file:///foo/bar.class")))
+  (is (= false (shared/class-file? "jar:file:///foo/bar.jar!/some/file.clj")))
+  (is (= true (shared/class-file? "jar:file:///foo/bar.jar!/some/file.class"))))
+
+(deftest normalize-uri-from-client
+  (testing "jar files"
+    ;; standard
+    (is (= (h/file-uri "jar:file:///some/path/some.jar!/some/file.clj")
+           (shared/normalize-uri-from-client (h/file-uri "jar:file:///some/path/some.jar!/some/file.clj"))))
+    ;; Calva
+    ;; Calva escapes aggressively, meaning h/file-uri doesn't work
+    (if h/windows? ;; TODO: is this how URIs look on Windows in Calva
+      (is (= "jar:file:///C:/some/path/some.jar!/some/file.clj"
+             (shared/normalize-uri-from-client "jar:file%3A///C%3A/some/path/some.jar%21/some/file.clj")))
+      (is (= "jar:file:///some/path/some.jar!/some/file.clj"
+             (shared/normalize-uri-from-client "jar:file%3A///some/path/some.jar%21/some/file.clj"))))
+    ;; with spaces
+    ;; TODO: this fails because `(unescape-uri uri)` converts %20 to a space
+    ;; character, which we don't want. But, we can't remove `(unescape-uri uri)`,
+    ;; or else the Calva jar file test above fails. I think it's rare for jar file
+    ;; paths to contain spaces, so I'm leaving this test commented out. Would be
+    ;; nice to fix someday.
+    #_(is (= (h/file-uri "jar:file:///some%20spaces/path/some.jar!/some%20spaces/file.clj")
+             (shared/normalize-uri-from-client (h/file-uri "jar:file:///some%20spaces/path/some.jar!/some%20spaces/file.clj")))))
+  (testing "zipfiles"
+    ;; standard
+    (is (= (h/file-uri "zipfile:///some/path/some.jar::some/file.clj")
+           (shared/normalize-uri-from-client (h/file-uri "zipfile:///some/path/some.jar::some/file.clj"))))
+    ;; coc.nvim
+    ;; coc.nvim doesn't include // authority, meaning h/file-uri doesn't work
+    (if h/windows?
+      (is (= "zipfile:///C:/some/path/some.jar::some/file.clj"
+             (shared/normalize-uri-from-client "zipfile:/C:/some/path/some.jar%3a%3asome/file.clj")))
+      (is (= "zipfile:///some/path/some.jar::some/file.clj"
+             (shared/normalize-uri-from-client "zipfile:/some/path/some.jar%3a%3asome/file.clj")))))
+  (testing "standard files"
+    ;; standard
+    (is (= (h/file-uri "file:///some/file.clj")
+           (shared/normalize-uri-from-client (h/file-uri "file:///some/file.clj"))))
+    ;; with spaces
+    (is (= (h/file-uri "file:///some%20spaces/file%20spaces.clj")
+           (shared/normalize-uri-from-client (h/file-uri "file:///some%20spaces/file%20spaces.clj"))))
+    ;; Windows
+    (when h/windows?
+      (are [uri] (= "file:///c:/c.clj"
+                    (shared/normalize-uri-from-client uri))
+        "file:/c:/c.clj"
+        "file:///c:/c.clj"))))
+
+(deftest uri-on-disk?
+  (let [path (fs/create-temp-file {:prefix "clojure-lsp-uri-on-disk-" :suffix ".clj"})
+        uri (shared/filename->uri (str (fs/canonicalize path)) (h/db))]
+    (try
+      (is (true? (shared/uri-on-disk? uri)))
+      (fs/delete path)
+      (is (false? (shared/uri-on-disk? uri)))
+      (finally
+        (when (fs/exists? path)
+          (fs/delete path))))))
+
+(deftest dir-uris->file-uris-test
+  (testing "when the dir-uri is a dir inside source-path"
+    (with-redefs [fs/glob (constantly [(h/file-path "/user/project/src/foo/bar.clj")
+                                       (h/file-path "/user/project/src/foo/baz.clj")])
+                  fs/canonicalize identity]
+      (is (= [(h/file-uri "file:///user/project/src/foo/bar.clj")
+              (h/file-uri "file:///user/project/src/foo/baz.clj")]
+             (shared/dir-uris->file-uris [(h/file-uri "file:///user/project/src")] (h/db))))))
+  (testing "when the dir-uri is absolute file URI"
+    (is (= [(h/file-uri "file:///user/project/src/foo/bar.clj")]
+           (shared/dir-uris->file-uris [(h/file-uri "file:///user/project/src/foo/bar.clj")] (h/db))))))
+
+(deftest client-changes-test
+  (testing "when client has refactor review support and is a multi-file change, then change annotations should be in edits"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}
+                                                                    :document-changes true}}}})
+    (is (= {:change-annotations
+            {"confirmClojureLspRefactor" {:label "Confirm clojure-lsp refactor", "needsConfirmation" true}}
+            :document-changes
+            [{:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+              :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+             {:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has refactor review support (via resource operations) and is a multi-file change,
+              then change annotations should be in edits"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}
+                                                                    :resource-operations true}}}})
+    (is (= {:change-annotations
+            {"confirmClojureLspRefactor" {:label "Confirm clojure-lsp refactor", "needsConfirmation" true}}
+            :document-changes
+            [{:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+              :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+             {:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "change annotation support indication can be an empty map"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {}
+                                                                    :resource-operations true}}}})
+    (is (= {:change-annotations
+            {"confirmClojureLspRefactor" {:label "Confirm clojure-lsp refactor", "needsConfirmation" true}}
+            :document-changes
+            [{:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+              :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+             {:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:annotation-id "confirmClojureLspRefactor"
+                       :new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has refactor review support and is a multi-file non-edit change,
+              then change annotations should also be in changes with a :kind section"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}
+                                                                    :resource-operations true}}}})
+    (is (= {:change-annotations
+            {"confirmClojureLspRefactor" {:label "Confirm clojure-lsp refactor", "needsConfirmation" true}}
+            :document-changes
+            [{:annotation-id "confirmClojureLspRefactor"
+              :kind :rename
+              :old-uri  (h/file-uri "file:///original-a.clj")
+              :new-uri  (h/file-uri "file:///new-a.clj")}
+             {:annotation-id "confirmClojureLspRefactor"
+              :kind :rename
+              :old-uri  (h/file-uri "file:///original-b.clj")
+              :new-uri  (h/file-uri "file:///new-b.clj")}]}
+           (shared/client-changes
+             [{:kind :rename
+               :old-uri  (h/file-uri "file:///original-a.clj")
+               :new-uri  (h/file-uri "file:///new-a.clj")}
+              {:kind :rename
+               :old-uri  (h/file-uri "file:///original-b.clj")
+               :new-uri  (h/file-uri "file:///new-b.clj")}]
+             (h/db)))))
+  (testing "when client has refactor review support and is a multi-file change with mixed edits and other operations
+                then change annotations should be in both changes with :edits sections and :kind sections"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}
+                                                                    :resource-operations true}}}})
+    (is (= {:change-annotations
+            {"confirmClojureLspRefactor" {:label "Confirm clojure-lsp refactor", "needsConfirmation" true}}
+            :document-changes
+            [{:annotation-id "confirmClojureLspRefactor"
+              :kind :rename
+              :old-uri  (h/file-uri "file:///original-a.clj")
+              :new-uri  (h/file-uri "file:///new-a.clj")}
+             {:annotation-id "confirmClojureLspRefactor"
+              :kind :rename
+              :old-uri  (h/file-uri "file:///original-b.clj")
+              :new-uri  (h/file-uri "file:///new-b.clj")}
+             {:edits [{:annotation-id "confirmClojureLspRefactor"
+                       :new-text "new-a", :range {:end {:character 24, :line 0}, :start {:character 4, :line 0}}}]
+              :text-document {:uri (h/file-uri "new-a.clj"), :version 0}}]}
+           (shared/client-changes
+             [{:kind :rename
+               :old-uri  (h/file-uri "file:///original-a.clj")
+               :new-uri  (h/file-uri "file:///new-a.clj")}
+              {:kind :rename
+               :old-uri  (h/file-uri "file:///original-b.clj")
+               :new-uri  (h/file-uri "file:///new-b.clj")}
+              {:edits [{:new-text "new-a", :range {:end {:character 24, :line 0}, :start {:character 4, :line 0}}}]
+               :text-document {:uri (h/file-uri "new-a.clj"), :version 0}}]
+             (h/db)))))
+  (testing "when client has refactor review support but only allows primitive changes and is a multi-file change, 
+                then should fall back to primitive text changes only and no refactoring review"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}}}}})
+    (is (= {:changes {(h/file-uri "file:///a.clj") [{:new-text ":my-a-kw43"
+                                                     :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                      (h/file-uri "file:///b.clj")
+                      [{:new-text ":my-a-kw43", :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                       {:new-text ":my-a-kw43", :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]}}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has refactor review support and change is only in one file, then no change annotations should be in edits
+            - files are changed without prompting"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:change-annotation-support {:groups-on-label true}
+                                                                    :document-changes true}}}})
+    (is (= {:document-changes
+            [{:edits [{:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has only document changes support then there are no change annotations but response indicates document changes can be done"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:document-changes true}}}})
+    (is (= {:document-changes
+            [{:edits [{:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+              :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+             {:edits [{:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has only resource operations support then there are no change annotations but response indicates document changes can be done"
+    (h/reset-components!)
+    (swap! (h/db*) shared/deep-merge {:client-capabilities
+                                      {:workspace {:workspace-edit {:resource-operations true}}}})
+    (is (= {:document-changes
+            [{:edits [{:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+              :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+             {:edits [{:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                      {:new-text ":my-a-kw43"
+                       :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+              :text-document {:uri (h/file-uri "file:///b.clj")
+                              :version 3}}]}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db)))))
+  (testing "when client has only simple text change support then there are no change annotations and response indicates 
+            that only text changes can be done"
+    (h/reset-components!)
+    (is (= {:changes {(h/file-uri "file:///a.clj") [{:new-text ":my-a-kw43"
+                                                     :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                      (h/file-uri "file:///b.clj")
+                      [{:new-text ":my-a-kw43", :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                       {:new-text ":my-a-kw43", :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]}}
+           (shared/client-changes [{:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 576}, :start {:character 0, :line 576}}}]
+                                    :text-document {:uri (h/file-uri "file:///a.clj"), :version 104}}
+                                   {:edits [{:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 12}, :start {:character 0, :line 12}}}
+                                            {:new-text ":my-a-kw43"
+                                             :range {:end {:character 10, :line 13}, :start {:character 0, :line 13}}}]
+                                    :text-document {:uri (h/file-uri "file:///b.clj")
+                                                    :version 3}}] (h/db))))))

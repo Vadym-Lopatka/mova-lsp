@@ -1,0 +1,20 @@
+;; Sole writer of the native store: commits worker results into a new immutable snapshot (stale versions dropped
+;; natively). Emits :committed {:snap :changed} for open docs and :progress for the background batch.
+(ns nx.store)
+
+(defn handle
+  "[outs-map] for one Results handle."
+  [eng results]
+  (let [{:keys [snap changed disk]} (mova.nx/commit! eng results)
+        bg (:bg-batch results)]
+    ;; progress rides along so diags can publish before `end` is sent (clients wait on `end`)
+    (let [progress (when bg {:batch bg :done (:bg-done results) :total (:bg-total results)})]
+      (if (or (seq changed) (seq disk) progress)
+        {:committed [{:snap snap :changed changed :disk disk :progress progress}]}
+        {}))))
+
+(defn store-step []
+  (flow/map->step
+   {:describe (fn [] {:ins {:in {}} :outs {:committed {}}})
+    :init (fn [_] {:eng (mova.nx/engine)})
+    :transform (fn [s _ results] [s (handle (:eng s) results)])}))

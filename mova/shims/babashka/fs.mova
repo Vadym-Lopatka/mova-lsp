@@ -1,0 +1,201 @@
+;; TEMP stub — replaced/extended by io wave
+;; Real babashka.fs is ~1400 lines layered directly on java.nio.file
+;; (Path/Files/FileVisitor/WalkFileTree/...), used throughout as a .cljc
+;; with almost no non-JVM branch -- reading it on Mova's `{:mova :clj
+;; :default}` reader-feature set falls through to the plain `:clj` forms
+;; (there is no `:mova` alternative upstream), which reference JVM-only
+;; classes like `java.nio.file.FileVisitResult` at namespace load time.
+;; That makes this a "whole library is Java underneath" case (PLAN.md's
+;; preference #2), not a small overlay diff.
+;;
+;; This shim implements only the ~10 functions clj-kondo's own impl
+;; namespaces and clojure-lsp's kondo.clj actually call (see mova/NOTES.md
+;; for the exact call-site list), on top of Mova's plain-string-path
+;; natives (list-dir/directory?/file-exists?/delete-file/canonical-path)
+;; plus the java.io.File veneer -- no java.nio.file anywhere.
+(ns babashka.fs
+  (:require
+   [clojure.java.io :as io]
+   [clojure.string :as str]))
+
+;; MOVA-PATCH: clojure_lsp.shared needs these two (path separator + path
+;; join) beyond clj-kondo's own call-site list.
+(def file-separator
+  "Real babashka.fs/file-separator: the platform path separator."
+  (System/getProperty "file.separator"))
+
+;; MOVA-PATCH: clojure-lsp.feature.stubs needs the PATH-list separator
+;; (":" / ";"), distinct from file-separator above.
+(def path-separator
+  "Real babashka.fs/path-separator: the platform PATH-list separator."
+  (System/getProperty "path.separator"))
+
+(defn as-file
+  "Coerces a File/String to a java.io.File."
+  [x]
+  (io/as-file x))
+
+(defn file
+  "Real babashka.fs/file: like clojure.java.io/file, folding path
+  segments (File/String) into a java.io.File."
+  [& args]
+  (apply io/file args))
+
+(defn path
+  "Real babashka.fs/path: joins segments into a Path; every in-scope
+  caller immediately `str`s or `.toString`s it, so a java.io.File
+  (whose .toString/str IS the joined path string) stands in."
+  [& args]
+  (apply io/file args))
+
+(defn exists?
+  [path]
+  (.exists (as-file path)))
+
+(defn which
+  "Real babashka.fs/which: search PATH for an executable named `bin`,
+  returning its path string or nil (upstream returns a Path; every
+  in-scope caller `.toString`s it -- `.toString` isn't on Mova's
+  `java.io.File` veneer, so return the string directly)."
+  [bin]
+  (let [dirs (str/split (or (System/getenv "PATH") "")
+                        (re-pattern (System/getProperty "path.separator")))]
+    (some (fn [dir]
+            (let [f (io/file dir bin)]
+              (when (and (.isFile f) (.canRead f)) (.getPath f))))
+          dirs)))
+
+(defn which-all
+  "Real babashka.fs/which-all: like `which`, but returns every match on
+  PATH (upstream returns Paths; every in-scope caller just feeds them to
+  `fs/real-path`, which itself accepts a string, same convention as
+  `which` above)."
+  [bin]
+  (let [dirs (str/split (or (System/getenv "PATH") "")
+                        (re-pattern (System/getProperty "path.separator")))]
+    (keep (fn [dir]
+            (let [f (io/file dir bin)]
+              (when (and (.isFile f) (.canRead f)) (.getPath f))))
+          dirs)))
+
+(defn delete
+  "Real babashka.fs/delete: deletes a single file/empty dir."
+  [path]
+  (.delete (as-file path))
+  nil)
+
+(defn delete-tree
+  "Real babashka.fs/delete-tree: recursively deletes a file or directory
+  tree. Depth-first via .listFiles (see the java.io.File veneer in mova's
+  src/hostclass.rs)."
+  [path]
+  (let [f (as-file path)]
+    (when (.exists f)
+      (when (.isDirectory f)
+        (run! (comp delete-tree str) (or (.listFiles f) [])))
+      (.delete f)))
+  nil)
+
+(defn parent
+  "Real babashka.fs/parent: the parent File, or nil at the root."
+  [path]
+  (.getParentFile (as-file path)))
+
+(defn file-name
+  "Real babashka.fs/file-name: the last path segment, as a string."
+  [path]
+  (.getName (as-file path)))
+
+(defn extension
+  "Real babashka.fs/extension: the file-name's extension (without the
+  dot), or \"\" if there is none."
+  [path]
+  (let [n (file-name path)
+        i (str/last-index-of n ".")]
+    (if (and i (pos? i))
+      (subs n (inc i))
+      "")))
+
+(defn unixify
+  "Real babashka.fs/unixify: backslashes to forward slashes (a no-op on a
+  path that already uses `/`, which is everything on this platform)."
+  [path]
+  (str/replace (str path) "\\" "/"))
+
+;; MOVA-PATCH (mova/PLAN.md interop-census batch): clojure-lsp.source-paths
+;; needs this beyond clj-kondo's own call-site list.
+(defn canonicalize
+  "Real babashka.fs/canonicalize: absolute + symlink-resolved path.
+  Upstream returns a Path; every in-scope caller immediately `str`s it or
+  does string-prefix comparisons on it (never a Path-specific method), so
+  a string is returned directly here. Uses getCanonicalPath (works for
+  not-yet-existing paths, unlike std::fs::canonicalize)."
+  [path]
+  (str (.getCanonicalPath (as-file path))))
+
+(defn relativize
+  "Real babashka.fs/relativize: `path` relative to `base`, as a string
+  (upstream returns a Path; every in-scope caller immediately `str`s it,
+  so a string is returned directly here)."
+  [base path]
+  (let [base (str (.getCanonicalPath (as-file base)))
+        path (str (.getCanonicalPath (as-file path)))
+        base (if (str/ends-with? base "/") base (str base "/"))]
+    (if (str/starts-with? path base)
+      (subs path (count base))
+      path)))
+
+;; MOVA-PATCH: java-interop's JDK-source step needs these three beyond
+;; clj-kondo's own call-site list; the natives already exist
+;; (src/builtins/fs.rs, added for glob/canonicalize) so these are thin
+;; wrappers, same convention as glob below.
+
+(defn list-dir
+  "Real babashka.fs/list-dir: the direct (non-recursive) children of
+  `dir` (upstream: Path; every in-scope caller only `str`s/relativizes
+  them, so plain path strings are returned, same convention as
+  `canonicalize`/`relativize` above)."
+  [dir]
+  (mova.fs/list-dir (str dir)))
+
+(defn real-path
+  "Real babashka.fs/real-path: symlink-resolved absolute path, requires
+  the path to exist (unlike `canonicalize`). The one in-scope caller
+  (`java-interop/find-local-jdk-source`) calls `.toFile` on the result,
+  so it's wrapped in a `java.io.File` (`.toFile` is identity there)."
+  [path]
+  (io/file (mova.fs/real-path (str path))))
+
+(defn unzip
+  "Real babashka.fs/unzip: extracts a zip archive to a directory
+  (`opts`, e.g. `:replace-existing`, are accepted for signature parity;
+  the native always overwrites, matching the only in-scope call site's
+  `{:replace-existing true}`)."
+  ([zip-file dest] (mova.fs/unzip (str zip-file) (str dest)))
+  ([zip-file dest _opts] (mova.fs/unzip (str zip-file) (str dest))))
+
+;; ---------------------------------------------------------------------
+;; glob -- MOVA-PATCH: native `mova.fs/glob` (src/builtins/fs.rs), walkdir
+;; + globset over real Rust code instead of an interpreted per-file
+;; `.list`/`.isDirectory` recursive walk. That interpreted walk is what
+;; made `cli_smoke` take minutes: every directory/file visited during
+;; source-path discovery paid a full evaluator round-trip. The native
+;; keeps the same semantics the old regex-based walker had (`**` crosses
+;; directory boundaries wherever it appears, including as a bare SEGMENT
+;; PREFIX like clojure-lsp's own `clj-file-regex`, `"**.{edn,clj,cljs,
+;; cljc,bb,cljd,clj_kondo}"`; `*`/`?`/`{a,b,c}` single-segment; `:hidden`/
+;; `:max-depth`/`:follow-links` same names/meanings/defaults as before).
+;; ---------------------------------------------------------------------
+
+(defn glob
+  "Real babashka.fs/glob: files under `dir` matching `pattern` (a
+  `/`-separated glob with `**`/`*`/`?`/`{a,b,c}`), returning a seq of
+  path strings (upstream returns `Path`s; every in-scope caller already
+  only `str`s or `.getCanonicalPath`s the result, so a string is
+  returned directly here, same convention as `canonicalize`/`relativize`
+  above). `opts` is a map; `:max-depth` (default 10, matching upstream's
+  default), `:hidden` (default: whether `pattern` starts with a dot,
+  upstream's own default rule), `:follow-links` (default false) are
+  honored."
+  ([dir pattern] (mova.fs/glob (str dir) pattern))
+  ([dir pattern opts] (mova.fs/glob (str dir) pattern opts)))

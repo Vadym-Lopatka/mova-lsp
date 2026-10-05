@@ -1,0 +1,3 @@
+;; Heap-image preload root for NX_METRICS=1 (nx/bin/nx-lsp): nx.main + the metrics fold, so it does not compile at run time.
+(ns nx.main-met
+  (:require [nx.main] [nx.metrics]))

@@ -1,0 +1,1059 @@
+{
+ "depcopy:change:diagnostics": [
+  "137:7:non-arg-vec-return-type-hint",
+  "179:7:non-arg-vec-return-type-hint",
+  "195:7:non-arg-vec-return-type-hint",
+  "206:7:non-arg-vec-return-type-hint",
+  "212:7:non-arg-vec-return-type-hint",
+  "234:7:non-arg-vec-return-type-hint",
+  "251:7:non-arg-vec-return-type-hint",
+  "263:7:non-arg-vec-return-type-hint",
+  "274:7:non-arg-vec-return-type-hint",
+  "300:7:non-arg-vec-return-type-hint",
+  "47:7:non-arg-vec-return-type-hint",
+  "53:7:non-arg-vec-return-type-hint",
+  "74:7:non-arg-vec-return-type-hint"
+ ],
+ "depcopy:open:108:12:definition": null,
+ "depcopy:open:108:12:hover": "(throw expr)",
+ "depcopy:open:108:12:references": [
+  "depcopy:clojure.string.clj:108",
+  "depcopy:clojure.string.clj:176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1405",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1732",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1789",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1851",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:198",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2538",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:297",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3301",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3323",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3810",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3819",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3874",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4187",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4259",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4268",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4273",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4413",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4451",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4516",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4578",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4587",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4592",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4693",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4875",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4879",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5467",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5526",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5706",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5708",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5765",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:586",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5916",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6006",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:602",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6153",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6458",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6817",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6823",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7670",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7686",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8051",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8056",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8062",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8189",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8211",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:108",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:176"
+ ],
+ "depcopy:open:137:14:definition": "depcopy:clojure.string.clj:137",
+ "depcopy:open:137:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:open:137:14:references": [
+  "depcopy:clojure.string.clj:137",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:137"
+ ],
+ "depcopy:open:195:14:definition": "depcopy:clojure.string.clj:195",
+ "depcopy:open:195:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:open:195:14:references": [
+  "depcopy:clojure.string.clj:195",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:195"
+ ],
+ "depcopy:open:224:43:definition": "depcopy:clojure.string.clj:224",
+ "depcopy:open:224:43:hover": null,
+ "depcopy:open:224:43:references": [
+  "depcopy:clojure.string.clj:224"
+ ],
+ "depcopy:open:256:11:definition": "depcopy:clojure.string.clj:256",
+ "depcopy:open:256:11:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:open:256:11:references": [
+  "depcopy:clojure.string.clj:256",
+  "depcopy:clojure.string.clj:257",
+  "depcopy:clojure.string.clj:259",
+  "depcopy:clojure.string.clj:260",
+  "depcopy:clojure.string.clj:261"
+ ],
+ "depcopy:open:323:8:definition": "depcopy:clojure.string.clj:323",
+ "depcopy:open:323:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "depcopy:open:323:8:references": [
+  "depcopy:clojure.string.clj:323",
+  "depcopy:clojure.string.clj:327",
+  "depcopy:clojure.string.clj:329"
+ ],
+ "depcopy:open:45:1:definition": null,
+ "depcopy:open:45:1:hover": "(set! var-symbol expr) (set! (. instance-expr instanceFieldName-symbol) expr) (set! (. Classname-symbol staticFieldName-symbol) expr)",
+ "depcopy:open:45:1:references": [
+  "depcopy:clojure.string.clj:45",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2109",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2115",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:45"
+ ],
+ "depcopy:open:61:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+ "depcopy:open:61:1:hover": "(clojure.core/defn- [name & decls])",
+ "depcopy:open:61:1:references": [
+  "depcopy:clojure.string.clj:110",
+  "depcopy:clojure.string.clj:121",
+  "depcopy:clojure.string.clj:129",
+  "depcopy:clojure.string.clj:61",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5501",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5505",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5512",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5515",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5535",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5541",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5906",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5922",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5931",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5938",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5947",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5955",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5968",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5980",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6027",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6050",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6135",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6674",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6680",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6690",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6701",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6707",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6723",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6759",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7667",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8031",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8037",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8041",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8070",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8162",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:110",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:121",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:129",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:61"
+ ],
+ "depcopy:open:66:15:definition": "depcopy:clojure.string.clj:66",
+ "depcopy:open:66:15:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:open:66:15:references": [
+  "depcopy:clojure.string.clj:66",
+  "depcopy:clojure.string.clj:67"
+ ],
+ "depcopy:open:8:1:definition": null,
+ "depcopy:open:8:1:hover": null,
+ "depcopy:open:8:1:references": [],
+ "depcopy:open:diagnostics": [
+  "137:7:non-arg-vec-return-type-hint",
+  "179:7:non-arg-vec-return-type-hint",
+  "195:7:non-arg-vec-return-type-hint",
+  "206:7:non-arg-vec-return-type-hint",
+  "212:7:non-arg-vec-return-type-hint",
+  "234:7:non-arg-vec-return-type-hint",
+  "251:7:non-arg-vec-return-type-hint",
+  "263:7:non-arg-vec-return-type-hint",
+  "274:7:non-arg-vec-return-type-hint",
+  "300:7:non-arg-vec-return-type-hint",
+  "47:7:non-arg-vec-return-type-hint",
+  "53:7:non-arg-vec-return-type-hint",
+  "74:7:non-arg-vec-return-type-hint"
+ ],
+ "depcopy:reopen:108:12:definition": null,
+ "depcopy:reopen:108:12:hover": "(throw expr)",
+ "depcopy:reopen:108:12:references": [
+  "depcopy:clojure.string.clj:108",
+  "depcopy:clojure.string.clj:176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1405",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1732",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1789",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1851",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:198",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2538",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:297",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3301",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3323",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3810",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3819",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3874",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4187",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4259",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4268",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4273",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4413",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4451",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4516",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4578",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4587",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4592",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4693",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4875",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4879",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5467",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5526",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5706",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5708",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5765",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:586",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5916",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6006",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:602",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6153",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6458",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6817",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6823",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7670",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7686",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8051",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8056",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8062",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8189",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8211",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:108",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:176"
+ ],
+ "depcopy:reopen:137:14:definition": "depcopy:clojure.string.clj:137",
+ "depcopy:reopen:137:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:reopen:137:14:references": [
+  "depcopy:clojure.string.clj:137",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:137"
+ ],
+ "depcopy:reopen:195:14:definition": "depcopy:clojure.string.clj:195",
+ "depcopy:reopen:195:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:reopen:195:14:references": [
+  "depcopy:clojure.string.clj:195",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:195"
+ ],
+ "depcopy:reopen:224:43:definition": "depcopy:clojure.string.clj:224",
+ "depcopy:reopen:224:43:hover": null,
+ "depcopy:reopen:224:43:references": [
+  "depcopy:clojure.string.clj:224"
+ ],
+ "depcopy:reopen:256:11:definition": "depcopy:clojure.string.clj:256",
+ "depcopy:reopen:256:11:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:reopen:256:11:references": [
+  "depcopy:clojure.string.clj:256",
+  "depcopy:clojure.string.clj:257",
+  "depcopy:clojure.string.clj:259",
+  "depcopy:clojure.string.clj:260",
+  "depcopy:clojure.string.clj:261"
+ ],
+ "depcopy:reopen:323:8:definition": "depcopy:clojure.string.clj:323",
+ "depcopy:reopen:323:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "depcopy:reopen:323:8:references": [
+  "depcopy:clojure.string.clj:323",
+  "depcopy:clojure.string.clj:327",
+  "depcopy:clojure.string.clj:329"
+ ],
+ "depcopy:reopen:45:1:definition": null,
+ "depcopy:reopen:45:1:hover": "(set! var-symbol expr) (set! (. instance-expr instanceFieldName-symbol) expr) (set! (. Classname-symbol staticFieldName-symbol) expr)",
+ "depcopy:reopen:45:1:references": [
+  "depcopy:clojure.string.clj:45",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2109",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2115",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:45"
+ ],
+ "depcopy:reopen:61:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+ "depcopy:reopen:61:1:hover": "(clojure.core/defn- [name & decls])",
+ "depcopy:reopen:61:1:references": [
+  "depcopy:clojure.string.clj:110",
+  "depcopy:clojure.string.clj:121",
+  "depcopy:clojure.string.clj:129",
+  "depcopy:clojure.string.clj:61",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5501",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5505",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5512",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5515",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5535",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5541",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5906",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5922",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5931",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5938",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5947",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5955",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5968",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5980",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6027",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6050",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6135",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6674",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6680",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6690",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6701",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6707",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6723",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6759",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7667",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8031",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8037",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8041",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8070",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8162",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:110",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:121",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:129",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:61"
+ ],
+ "depcopy:reopen:66:15:definition": "depcopy:clojure.string.clj:66",
+ "depcopy:reopen:66:15:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:reopen:66:15:references": [
+  "depcopy:clojure.string.clj:66",
+  "depcopy:clojure.string.clj:67"
+ ],
+ "depcopy:reopen:8:1:definition": null,
+ "depcopy:reopen:8:1:hover": null,
+ "depcopy:reopen:8:1:references": [],
+ "depcopy:reopen:diagnostics": [
+  "137:7:non-arg-vec-return-type-hint",
+  "179:7:non-arg-vec-return-type-hint",
+  "195:7:non-arg-vec-return-type-hint",
+  "206:7:non-arg-vec-return-type-hint",
+  "212:7:non-arg-vec-return-type-hint",
+  "234:7:non-arg-vec-return-type-hint",
+  "251:7:non-arg-vec-return-type-hint",
+  "263:7:non-arg-vec-return-type-hint",
+  "274:7:non-arg-vec-return-type-hint",
+  "300:7:non-arg-vec-return-type-hint",
+  "47:7:non-arg-vec-return-type-hint",
+  "53:7:non-arg-vec-return-type-hint",
+  "74:7:non-arg-vec-return-type-hint"
+ ],
+ "depcopy:stale:108:12:definition": null,
+ "depcopy:stale:108:12:hover": "(throw expr)",
+ "depcopy:stale:108:12:references": [
+  "depcopy:clojure.string.clj:108",
+  "depcopy:clojure.string.clj:176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1405",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1732",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1789",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1851",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:198",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2538",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:297",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3301",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3323",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3810",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3819",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3874",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4187",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4259",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4268",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4273",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4413",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4451",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4516",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4578",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4587",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4592",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4693",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4875",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4879",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5467",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5526",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5706",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5708",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5765",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:586",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5916",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6006",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:602",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6153",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6458",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6817",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6823",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7670",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7675",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7686",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8051",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8056",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8062",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8176",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8189",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8211",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:108",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:176"
+ ],
+ "depcopy:stale:137:14:definition": "depcopy:clojure.string.clj:137",
+ "depcopy:stale:137:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:stale:137:14:references": [
+  "depcopy:clojure.string.clj:137",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:137"
+ ],
+ "depcopy:stale:195:14:definition": "depcopy:clojure.string.clj:195",
+ "depcopy:stale:195:14:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "depcopy:stale:195:14:references": [
+  "depcopy:clojure.string.clj:195",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:195"
+ ],
+ "depcopy:stale:224:43:definition": "depcopy:clojure.string.clj:224",
+ "depcopy:stale:224:43:hover": null,
+ "depcopy:stale:224:43:references": [
+  "depcopy:clojure.string.clj:224"
+ ],
+ "depcopy:stale:256:11:definition": "depcopy:clojure.string.clj:256",
+ "depcopy:stale:256:11:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:stale:256:11:references": [
+  "depcopy:clojure.string.clj:256",
+  "depcopy:clojure.string.clj:257",
+  "depcopy:clojure.string.clj:259",
+  "depcopy:clojure.string.clj:260",
+  "depcopy:clojure.string.clj:261"
+ ],
+ "depcopy:stale:323:8:definition": "depcopy:clojure.string.clj:323",
+ "depcopy:stale:323:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "depcopy:stale:323:8:references": [
+  "depcopy:clojure.string.clj:323",
+  "depcopy:clojure.string.clj:327",
+  "depcopy:clojure.string.clj:329"
+ ],
+ "depcopy:stale:45:1:definition": null,
+ "depcopy:stale:45:1:hover": "(set! var-symbol expr) (set! (. instance-expr instanceFieldName-symbol) expr) (set! (. Classname-symbol staticFieldName-symbol) expr)",
+ "depcopy:stale:45:1:references": [
+  "depcopy:clojure.string.clj:45",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2109",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2115",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:45"
+ ],
+ "depcopy:stale:61:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+ "depcopy:stale:61:1:hover": "(clojure.core/defn- [name & decls])",
+ "depcopy:stale:61:1:references": [
+  "depcopy:clojure.string.clj:110",
+  "depcopy:clojure.string.clj:121",
+  "depcopy:clojure.string.clj:129",
+  "depcopy:clojure.string.clj:61",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4977",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5501",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5505",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5512",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5515",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5535",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5541",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5906",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5922",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5931",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5938",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5947",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5955",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5968",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:5980",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6027",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6050",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6135",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6674",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6680",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6690",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6701",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6707",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6723",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6759",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7080",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:7667",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8031",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8037",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8041",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8070",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:8162",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:110",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:121",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:129",
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:61"
+ ],
+ "depcopy:stale:66:15:definition": "depcopy:clojure.string.clj:66",
+ "depcopy:stale:66:15:hover": "calling: (clojure.core/loop [bindings & body])",
+ "depcopy:stale:66:15:references": [
+  "depcopy:clojure.string.clj:66",
+  "depcopy:clojure.string.clj:67"
+ ],
+ "depcopy:stale:8:1:definition": null,
+ "depcopy:stale:8:1:hover": null,
+ "depcopy:stale:8:1:references": [],
+ "depcopy:stale:diagnostics": [
+  "137:7:non-arg-vec-return-type-hint",
+  "179:7:non-arg-vec-return-type-hint",
+  "195:7:non-arg-vec-return-type-hint",
+  "206:7:non-arg-vec-return-type-hint",
+  "212:7:non-arg-vec-return-type-hint",
+  "234:7:non-arg-vec-return-type-hint",
+  "251:7:non-arg-vec-return-type-hint",
+  "263:7:non-arg-vec-return-type-hint",
+  "274:7:non-arg-vec-return-type-hint",
+  "300:7:non-arg-vec-return-type-hint",
+  "47:7:non-arg-vec-return-type-hint",
+  "53:7:non-arg-vec-return-type-hint",
+  "74:7:non-arg-vec-return-type-hint"
+ ],
+ "src/app/core.clj:0:1:completion": [
+  "ns",
+  "ns-aliases",
+  "ns-imports",
+  "ns-interns",
+  "ns-map",
+  "ns-name",
+  "ns-publics",
+  "ns-refers",
+  "ns-resolve",
+  "ns-unalias",
+  "ns-unmap"
+ ],
+ "src/app/core.clj:0:1:definition": null,
+ "src/app/core.clj:0:1:hover": null,
+ "src/app/core.clj:0:1:references": [],
+ "src/app/core.clj:0:4:completion": [
+  "app.core",
+  "app.core/add",
+  "app.core/run"
+ ],
+ "src/app/core.clj:0:4:definition": "project:src/app/core.clj:0",
+ "src/app/core.clj:0:4:hover": "app.core",
+ "src/app/core.clj:0:4:references": [
+  "project:src/app/core.clj:0"
+ ],
+ "src/app/core.clj:10:21:completion": [
+  "u/greet"
+ ],
+ "src/app/core.clj:10:21:definition": "project:src/app/util.clj:4",
+ "src/app/core.clj:10:21:hover": "(app.util/greet [this])",
+ "src/app/core.clj:10:21:references": [
+  "project:src/app/core.clj:10",
+  "project:src/app/util.clj:4"
+ ],
+ "src/app/core.clj:10:30:completion": [
+  "u/->Person"
+ ],
+ "src/app/core.clj:10:30:definition": "project:src/app/util.clj:6",
+ "src/app/core.clj:10:30:hover": "(app.util/->Person [name])",
+ "src/app/core.clj:10:30:references": [
+  "project:src/app/core.clj:10",
+  "project:src/app/util.clj:6"
+ ],
+ "src/app/core.clj:10:5:completion": [
+  "str/upper-case"
+ ],
+ "src/app/core.clj:10:5:definition": "jar:clojure-1.12.1.jar!/clojure/string.clj:206",
+ "src/app/core.clj:10:5:hover": "(clojure.string/upper-case [s])",
+ "src/app/core.clj:10:5:references": [
+  "jar:clojure-1.12.1.jar!/clojure/string.clj:206",
+  "project:src/app/core.clj:10"
+ ],
+ "src/app/core.clj:11:14:definition": "project:src/app/util.clj:15",
+ "src/app/core.clj:11:14:hover": "(app.util/fresh-id [])",
+ "src/app/core.clj:11:14:references": [
+  "project:src/app/core.clj:11",
+  "project:src/app/util.clj:15"
+ ],
+ "src/app/core.clj:11:26:definition": "jdk:java.base/java/lang/Integer.java:85",
+ "src/app/core.clj:11:26:hover": "calling: (clojure.core/let [bindings & body])",
+ "src/app/core.clj:11:26:references": [
+  "project:src/app/core.clj:11"
+ ],
+ "src/app/core.clj:11:6:completion": [
+  "u/now"
+ ],
+ "src/app/core.clj:11:6:definition": "project:src/app/util.clj:13",
+ "src/app/core.clj:11:6:hover": "(app.util/now [])",
+ "src/app/core.clj:11:6:references": [
+  "project:src/app/core.clj:11",
+  "project:src/app/util.clj:13"
+ ],
+ "src/app/core.clj:1:13:completion": [
+  "app.util"
+ ],
+ "src/app/core.clj:1:13:definition": "project:src/app/util.clj:0",
+ "src/app/core.clj:1:13:hover": "calling: (:require)",
+ "src/app/core.clj:1:13:references": [
+  "project:src/app/core.clj:1"
+ ],
+ "src/app/core.clj:1:22:definition": "project:src/app/core.clj:1",
+ "src/app/core.clj:1:22:hover": "calling: (:require)",
+ "src/app/core.clj:1:22:references": [
+  "project:src/app/core.clj:1",
+  "project:src/app/core.clj:2"
+ ],
+ "src/app/core.clj:1:26:definition": "project:src/app/util.clj:0",
+ "src/app/core.clj:1:26:hover": "calling: (:require)",
+ "src/app/core.clj:1:26:references": [
+  "project:src/app/core.clj:1",
+  "project:src/app/core.clj:10",
+  "project:src/app/core.clj:11",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:1:3:definition": "project:src/app/core.clj:1",
+ "src/app/core.clj:1:3:hover": "require",
+ "src/app/core.clj:1:3:references": [
+  "project:src/app/core.clj:1"
+ ],
+ "src/app/core.clj:2:13:completion": [
+  "clojure.string"
+ ],
+ "src/app/core.clj:2:13:definition": "jar:clojure-1.12.1.jar!/clojure/string.clj:40",
+ "src/app/core.clj:2:13:hover": "calling: (:require)",
+ "src/app/core.clj:2:13:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core/server.clj:11",
+  "jar:clojure-1.12.1.jar!/clojure/java/browse.clj:13",
+  "jar:clojure-1.12.1.jar!/clojure/java/io.clj:12",
+  "jar:clojure-1.12.1.jar!/clojure/test.clj:236",
+  "jar:clojure-1.12.1.jar!/clojure/tools/deps/interop.clj:13",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/alpha.clj:19",
+  "jar:spec.alpha-0.5.238.jar!/clojure/spec/test/alpha.clj:14",
+  "project:src/app/core.clj:2"
+ ],
+ "src/app/core.clj:2:32:completion": [],
+ "src/app/core.clj:2:32:definition": "jar:clojure-1.12.1.jar!/clojure/string.clj:40",
+ "src/app/core.clj:2:32:hover": "calling: (:require)",
+ "src/app/core.clj:2:32:references": [
+  "project:src/app/core.clj:10",
+  "project:src/app/core.clj:2"
+ ],
+ "src/app/core.clj:4:11:definition": "project:src/app/core.clj:4",
+ "src/app/core.clj:4:11:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:4:11:references": [
+  "project:src/app/core.clj:4"
+ ],
+ "src/app/core.clj:4:13:definition": "project:src/app/core.clj:4",
+ "src/app/core.clj:4:13:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:4:13:references": [
+  "project:src/app/core.clj:4"
+ ],
+ "src/app/core.clj:4:17:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:985",
+ "src/app/core.clj:4:17:hover": "(clojure.core/+ [] [x] [x y] [x y & more])",
+ "src/app/core.clj:4:17:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:985",
+  "project:src/app/core.clj:4",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:4:1:completion": [
+  "defn",
+  "defn-"
+ ],
+ "src/app/core.clj:4:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:293",
+ "src/app/core.clj:4:1:hover": "(clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:4:1:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:293",
+  "project:src/app/core.clj:4",
+  "project:src/app/core.clj:6",
+  "project:src/app/util.clj:13",
+  "project:src/app/util.clj:15"
+ ],
+ "src/app/core.clj:4:6:completion": [
+  "add",
+  "add-classpath",
+  "add-tap",
+  "add-watch"
+ ],
+ "src/app/core.clj:4:6:definition": "project:src/app/core.clj:4",
+ "src/app/core.clj:4:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:4:6:references": [
+  "project:src/app/core.clj:4",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:6:11:completion": [
+  "xs"
+ ],
+ "src/app/core.clj:6:11:definition": "project:src/app/core.clj:6",
+ "src/app/core.clj:6:11:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:6:11:references": [
+  "project:src/app/core.clj:6",
+  "project:src/app/core.clj:8"
+ ],
+ "src/app/core.clj:6:6:completion": [
+  "run",
+  "run!"
+ ],
+ "src/app/core.clj:6:6:definition": "project:src/app/core.clj:6",
+ "src/app/core.clj:6:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/core.clj:6:6:references": [
+  "project:src/app/core.clj:6"
+ ],
+ "src/app/core.clj:7:3:completion": [
+  "let",
+  "letfn"
+ ],
+ "src/app/core.clj:7:3:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:4522",
+ "src/app/core.clj:7:3:hover": "(clojure.core/let [bindings & body])",
+ "src/app/core.clj:7:3:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:34",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:4522",
+  "project:src/app/core.clj:7"
+ ],
+ "src/app/core.clj:7:8:completion": [
+  "unused"
+ ],
+ "src/app/core.clj:7:8:definition": "project:src/app/core.clj:7",
+ "src/app/core.clj:7:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "src/app/core.clj:7:8:references": [
+  "project:src/app/core.clj:7"
+ ],
+ "src/app/core.clj:8:11:completion": [
+  "map",
+  "map-entry?",
+  "map-indexed",
+  "map?",
+  "mapcat",
+  "mapv"
+ ],
+ "src/app/core.clj:8:11:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:2743",
+ "src/app/core.clj:8:11:hover": "(clojure.core/map [f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & colls])",
+ "src/app/core.clj:8:11:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:1725",
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:2743",
+  "project:src/app/core.clj:8"
+ ],
+ "src/app/core.clj:8:15:completion": [
+  "inc",
+  "inc'"
+ ],
+ "src/app/core.clj:8:15:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:923",
+ "src/app/core.clj:8:15:hover": "calling: (clojure.core/map [f] [f coll] [f c1 c2] [f c1 c2 c3] [f c1 c2 c3 & colls])",
+ "src/app/core.clj:8:15:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:923",
+  "project:src/app/core.clj:8"
+ ],
+ "src/app/core.clj:8:8:definition": "project:src/app/core.clj:8",
+ "src/app/core.clj:8:8:hover": "calling: (clojure.core/let [bindings & body])",
+ "src/app/core.clj:8:8:references": [
+  "project:src/app/core.clj:8",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:9:14:completion": [
+  "println",
+  "println-str"
+ ],
+ "src/app/core.clj:9:14:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:3758",
+ "src/app/core.clj:9:14:hover": "(clojure.core/println [& more])",
+ "src/app/core.clj:9:14:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:3758",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:9:30:completion": [
+  "reduce",
+  "reduce-kv",
+  "reduced",
+  "reduced?"
+ ],
+ "src/app/core.clj:9:30:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:6946",
+ "src/app/core.clj:9:30:hover": "(clojure.core/reduce [f coll] [f val coll])",
+ "src/app/core.clj:9:30:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:6946",
+  "project:src/app/core.clj:9"
+ ],
+ "src/app/core.clj:9:5:completion": [
+  "u/twice"
+ ],
+ "src/app/core.clj:9:5:definition": "project:src/app/util.clj:10",
+ "src/app/core.clj:9:5:hover": "(app.util/twice [x])",
+ "src/app/core.clj:9:5:references": [
+  "project:src/app/core.clj:9",
+  "project:src/app/util.clj:10"
+ ],
+ "src/app/core.clj:diagnostics": [
+  "10:4:unused-value",
+  "6:6:clojure-lsp/unused-public-var",
+  "7:8:unused-binding"
+ ],
+ "src/app/util.clj:0:1:completion": [
+  "ns",
+  "ns-aliases",
+  "ns-imports",
+  "ns-interns",
+  "ns-map",
+  "ns-name",
+  "ns-publics",
+  "ns-refers",
+  "ns-resolve",
+  "ns-unalias",
+  "ns-unmap"
+ ],
+ "src/app/util.clj:0:1:definition": null,
+ "src/app/util.clj:0:1:hover": null,
+ "src/app/util.clj:0:1:references": [],
+ "src/app/util.clj:0:4:completion": [
+  "app.util",
+  "app.util",
+  "app.util/->Person",
+  "app.util/Greeter",
+  "app.util/Person",
+  "app.util/fresh-id",
+  "app.util/greet",
+  "app.util/map->Person",
+  "app.util/now",
+  "app.util/twice"
+ ],
+ "src/app/util.clj:0:4:definition": "project:src/app/util.clj:0",
+ "src/app/util.clj:0:4:hover": "app.util",
+ "src/app/util.clj:0:4:references": [
+  "project:src/app/core.clj:1",
+  "project:src/app/util.clj:0"
+ ],
+ "src/app/util.clj:10:10:completion": [
+  "twice"
+ ],
+ "src/app/util.clj:10:10:definition": "project:src/app/util.clj:10",
+ "src/app/util.clj:10:10:hover": "calling: (clojure.core/defmacro [name doc-string? attr-map? [params*] body] [name doc-string? attr-map? ([params*] body) + attr-map?])",
+ "src/app/util.clj:10:10:references": [
+  "project:src/app/core.clj:9",
+  "project:src/app/util.clj:10"
+ ],
+ "src/app/util.clj:10:17:definition": "project:src/app/util.clj:10",
+ "src/app/util.clj:10:17:hover": "calling: (clojure.core/defmacro [name doc-string? attr-map? [params*] body] [name doc-string? attr-map? ([params*] body) + attr-map?])",
+ "src/app/util.clj:10:17:references": [
+  "project:src/app/util.clj:10",
+  "project:src/app/util.clj:11"
+ ],
+ "src/app/util.clj:10:1:completion": [
+  "defmacro"
+ ],
+ "src/app/util.clj:10:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:453",
+ "src/app/util.clj:10:1:hover": "(clojure.core/defmacro [name doc-string? attr-map? [params*] body] [name doc-string? attr-map? ([params*] body) + attr-map?])",
+ "src/app/util.clj:10:1:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:453",
+  "project:src/app/util.clj:10"
+ ],
+ "src/app/util.clj:11:4:completion": [
+  "do",
+  "doall",
+  "dorun",
+  "doseq",
+  "dosync",
+  "dotimes",
+  "doto",
+  "double",
+  "double-array",
+  "double?",
+  "doubles"
+ ],
+ "src/app/util.clj:11:4:definition": null,
+ "src/app/util.clj:11:4:hover": "do",
+ "src/app/util.clj:11:4:references": [
+  "project:src/app/util.clj:11"
+ ],
+ "src/app/util.clj:13:14:completion": [],
+ "src/app/util.clj:13:14:definition": "jdk:java.base/java/util/Date.java:0",
+ "src/app/util.clj:13:14:hover": null,
+ "src/app/util.clj:13:14:references": [
+  "project:src/app/util.clj:13"
+ ],
+ "src/app/util.clj:13:1:completion": [
+  "defn",
+  "defn-"
+ ],
+ "src/app/util.clj:13:1:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:293",
+ "src/app/util.clj:13:1:hover": "(clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:13:1:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:293",
+  "project:src/app/core.clj:4",
+  "project:src/app/core.clj:6",
+  "project:src/app/util.clj:13",
+  "project:src/app/util.clj:15"
+ ],
+ "src/app/util.clj:13:6:completion": [
+  "now"
+ ],
+ "src/app/util.clj:13:6:definition": "project:src/app/util.clj:13",
+ "src/app/util.clj:13:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:13:6:references": [
+  "project:src/app/core.clj:11",
+  "project:src/app/util.clj:13"
+ ],
+ "src/app/util.clj:15:24:definition": "jdk:java.base/java/util/UUID.java:148",
+ "src/app/util.clj:15:24:hover": "(UUID randomUUID ())",
+ "src/app/util.clj:15:24:references": [
+  "project:src/app/util.clj:15"
+ ],
+ "src/app/util.clj:15:6:completion": [
+  "fresh-id"
+ ],
+ "src/app/util.clj:15:6:definition": "project:src/app/util.clj:15",
+ "src/app/util.clj:15:6:hover": "calling: (clojure.core/defn [name doc-string? attr-map? [params*] prepost-map? body] [name doc-string? attr-map? ([params*] prepost-map? body) + attr-map?])",
+ "src/app/util.clj:15:6:references": [
+  "project:src/app/core.clj:11",
+  "project:src/app/util.clj:15"
+ ],
+ "src/app/util.clj:1:12:completion": [
+  "java.util.AbstractCollection",
+  "java.util.AbstractList",
+  "java.util.AbstractList$Itr",
+  "java.util.AbstractList$ListItr",
+  "java.util.AbstractList$RandomAccessSpliterator",
+  "java.util.AbstractList$RandomAccessSubList",
+  "java.util.AbstractList$SubList",
+  "java.util.AbstractMap",
+  "java.util.AbstractMap$SimpleEntry",
+  "java.util.AbstractMap$SimpleImmutableEntry",
+  "java.util.AbstractMap$ViewCollection",
+  "java.util.AbstractQueue",
+  "java.util.AbstractSequentialList",
+  "java.util.AbstractSet",
+  "java.util.ArrayDeque",
+  "java.util.ArrayDeque$DeqIterator",
+  "java.util.ArrayDeque$DeqSpliterator",
+  "java.util.ArrayDeque$DescendingIterator",
+  "java.util.ArrayList",
+  "java.util.ArrayList$ArrayListSpliterator",
+  "java.util.ArrayList$Itr",
+  "java.util.ArrayList$ListItr",
+  "java.util.ArrayList$SubList",
+  "java.util.ArrayPrefixHelpers",
+  "java.util.ArrayPrefixHelpers$CumulateTask",
+  "java.util.ArrayPrefixHelpers$DoubleCumulateTask",
+  "java.util.ArrayPrefixHelpers$IntCumulateTask",
+  "java.util.ArrayPrefixHelpers$LongCumulateTask",
+  "java.util.Arrays",
+  "java.util.Arrays$ArrayItr"
+ ],
+ "src/app/util.clj:1:12:definition": null,
+ "src/app/util.clj:1:12:hover": "import",
+ "src/app/util.clj:1:12:references": [],
+ "src/app/util.clj:1:22:completion": [
+  "Date"
+ ],
+ "src/app/util.clj:1:22:definition": "jdk:java.base/java/util/Date.java:0",
+ "src/app/util.clj:1:22:hover": "calling: (:import)",
+ "src/app/util.clj:1:22:references": [
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/util.clj:1:27:completion": [
+  "UUID"
+ ],
+ "src/app/util.clj:1:27:definition": "jdk:java.base/java/util/UUID.java:0",
+ "src/app/util.clj:1:27:hover": "calling: (:import)",
+ "src/app/util.clj:1:27:references": [
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/util.clj:1:3:definition": "project:src/app/util.clj:1",
+ "src/app/util.clj:1:3:hover": "import",
+ "src/app/util.clj:1:3:references": [
+  "project:src/app/util.clj:1"
+ ],
+ "src/app/util.clj:3:13:completion": [
+  "Greeter"
+ ],
+ "src/app/util.clj:3:13:definition": "project:src/app/util.clj:3",
+ "src/app/util.clj:3:13:hover": "calling: (clojure.core/defprotocol)",
+ "src/app/util.clj:3:13:references": [
+  "project:src/app/util.clj:3",
+  "project:src/app/util.clj:7"
+ ],
+ "src/app/util.clj:3:1:completion": [
+  "defprotocol"
+ ],
+ "src/app/util.clj:3:1:definition": null,
+ "src/app/util.clj:3:1:hover": "defprotocol",
+ "src/app/util.clj:3:1:references": [
+  "project:src/app/util.clj:3"
+ ],
+ "src/app/util.clj:4:10:completion": [],
+ "src/app/util.clj:4:10:definition": null,
+ "src/app/util.clj:4:10:hover": "calling: (app.util/greet [this])",
+ "src/app/util.clj:4:10:references": [
+  "project:src/app/util.clj:4"
+ ],
+ "src/app/util.clj:4:3:completion": [
+  "greet"
+ ],
+ "src/app/util.clj:4:3:definition": "project:src/app/util.clj:4",
+ "src/app/util.clj:4:3:hover": "(app.util/greet [this])",
+ "src/app/util.clj:4:3:references": [
+  "project:src/app/core.clj:10",
+  "project:src/app/util.clj:4"
+ ],
+ "src/app/util.clj:6:11:completion": [
+  "Person"
+ ],
+ "src/app/util.clj:6:11:definition": "project:src/app/util.clj:6",
+ "src/app/util.clj:6:11:hover": "calling: (clojure.core/defrecord)",
+ "src/app/util.clj:6:11:references": [
+  "project:src/app/core.clj:10",
+  "project:src/app/util.clj:6"
+ ],
+ "src/app/util.clj:6:19:completion": [
+  "name",
+  "name",
+  "namespace",
+  "namespace-munge"
+ ],
+ "src/app/util.clj:6:19:definition": "project:src/app/util.clj:6",
+ "src/app/util.clj:6:19:hover": "calling: (clojure.core/defrecord)",
+ "src/app/util.clj:6:19:references": [
+  "project:src/app/util.clj:6",
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:6:1:completion": [
+  "defrecord"
+ ],
+ "src/app/util.clj:6:1:definition": null,
+ "src/app/util.clj:6:1:hover": "defrecord",
+ "src/app/util.clj:6:1:references": [
+  "project:src/app/util.clj:6"
+ ],
+ "src/app/util.clj:8:10:definition": "project:src/app/util.clj:8",
+ "src/app/util.clj:8:10:hover": "calling: (app.util/greet [this])",
+ "src/app/util.clj:8:10:references": [
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:8:14:completion": [
+  "str",
+  "str",
+  "str/blank?",
+  "str/capitalize",
+  "str/ends-with?",
+  "str/escape",
+  "str/includes?",
+  "str/index-of",
+  "str/join",
+  "str/last-index-of",
+  "str/lower-case",
+  "str/re-quote-replacement",
+  "str/replace",
+  "str/replace-first",
+  "str/reverse",
+  "str/split",
+  "str/split-lines",
+  "str/starts-with?",
+  "str/trim",
+  "str/trim-newline",
+  "str/triml",
+  "str/trimr",
+  "str/upper-case",
+  "string?",
+  "struct",
+  "struct-map"
+ ],
+ "src/app/util.clj:8:14:definition": "jar:clojure-1.12.1.jar!/clojure/core.clj:545",
+ "src/app/util.clj:8:14:hover": "(clojure.core/str [] [x] [x & ys])",
+ "src/app/util.clj:8:14:references": [
+  "jar:clojure-1.12.1.jar!/clojure/core.clj:545",
+  "project:src/app/util.clj:15",
+  "project:src/app/util.clj:8"
+ ],
+ "src/app/util.clj:diagnostics": []
+}

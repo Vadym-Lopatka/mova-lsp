@@ -1,0 +1,16 @@
+(ns lint.typehints
+  (:require [clojure.spec.alpha :as s]))
+
+(defn ^String with-tag [x] (str x))
+(defn ^{:tag String} with-tag-map [x] (str x))
+(defn ^:private with-private [x] x)
+(defn- ^java.util.List with-long-tag [x] [x])
+(s/fdef with-tag :args (s/cat :x any?) :ret string? :bogus 1)
+(s/fdef not-a-symbol-x)
+(s/fdef "string" :args any?)
+(s/def ::thing (s/keys :req [::a] :opt-un [::b] :weird [::c]))
+(defn destructure-or [{:keys [a b] :or {a 1 b (inc a)}}] [a b])
+(defn thread-meta [f] (some-> f ^String (str) (.replace "/" ".")))
+(defn thread-meta2 [f] (-> f ^String (str) (.length)))
+(defn nested-hint [^String s] (.length s))
+(def ^{:a 1 :a 2} dup-meta 1)

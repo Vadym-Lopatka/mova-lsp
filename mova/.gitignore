@@ -1,0 +1,4 @@
+vendor/
+module-path.txt
+vendor
+__pycache__/

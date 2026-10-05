@@ -1,0 +1,162 @@
+;; lsp/io (clojure-lsp-on-Mova campaign, mova/PLAN.md): `clojure.java.io`
+;; is skipped when `mova/bin/vendor.sh` unzips the `org.clojure/clojure`
+;; jar (that jar is excluded entirely -- see vendor.sh's `SKIP` regex), so
+;; this namespace has no source anywhere on the module path unless this
+;; file provides it. Per PLAN.md rule #3 (Rust-native capability with a
+;; Clojure-shaped API), the real filesystem/stream work lives in
+;; `src/builtins/io.rs`'s `mova.io/*` natives plus `hostclass.rs`'s
+;; `java.io.File` veneer and real `InputStream`/`OutputStream` host kinds
+;; (lsp/host branch); this file is the thin Clojure-shaped public surface
+;; PLAN.md's shim rule calls for.
+;;
+;; Subset covered (PLAN.md's explicit list): `file`, `reader`, `writer`,
+;; `input-stream`, `output-stream`, `resource`, `make-parents`, `copy`,
+;; `delete-file`.
+;;
+;; Review round 2: `input-stream`/`output-stream`/`reader`/`writer` now
+;; return REAL streams (`mova.io/file-input-stream`/`file-output-stream`),
+;; not identity passthroughs -- `writer` streams writes straight to the
+;; file (`HostKind::OutputStream`, buffered but not accumulate-then-
+;; write-whole-file). `resource` does a REAL module-path search
+;; (`mova.io/resolve-resource`, walking `Interp::module_paths` in the same
+;; order `require`/`load` do), not a bare cwd-relative check.
+;;
+;; `resource`'s return shape (documented, since callers need to know):
+;; a `"file://" + absolute-path` STRING, never a `File` object -- `str`
+;; on it is the identity (it already IS the string a caller would print),
+;; and both `io/file`/`io/input-stream` (via this file's `strip-file-url`)
+;; and `slurp` (via `sys.rs`'s own `slurp_path_arg`, same prefix strip)
+;; accept it directly. This mirrors real Clojure's own `io/resource`
+;; (a `java.net.URL`, `.toString`'d the same "file:/abs/path" shape) close
+;; enough for every consumer in scope (reading a resource's contents, or
+;; printing its location) without needing mova's own URL type.
+;;
+;; Known gaps (honest, not hidden -- see `mova/NOTES.md`):
+;; - `input-stream`/`output-stream`/`reader`/`writer` coerce only a path
+;;   string, a `"file://"` resource string, or a `java.io.File`/already-
+;;   open stream -- not a URL, socket, or byte array (no measured call
+;;   site in this campaign's scope needs those).
+;; - `copy` covers the file-to-file case only (`std::fs::copy`), not the
+;;   Reader-to-Writer/stream-to-stream generality real `io/copy` has.
+
+(ns clojure.java.io)
+
+(defn- strip-file-url
+  "Undoes `resource`'s `\"file://\" + path` wrapping -- a no-op on any
+  string that doesn't start with that literal scheme, so a bare path is
+  completely unaffected."
+  [s]
+  (if (clojure.string/starts-with? s "file://")
+    (subs s (count "file://"))
+    s))
+
+(defn- as-path-str
+  "Accepts a path string (stripping a `file://` resource prefix first),
+  a `\"file://\"` resource string, or a `java.io.File` (a `HostKind::
+  JavaFile` `HostInst`, from `mova.io/new-java-file`/`(java.io.File.
+  ...)`), and returns a plain filesystem path string."
+  [x]
+  (cond
+    (string? x) (strip-file-url x)
+    (instance? java.io.File x) (.getPath x)
+    :else (throw (ex-info (str "Cannot coerce to a path: " x) {}))))
+
+(defn file
+  "clojure.java.io/file: joins 1+ path segments (each a string, a
+  `\"file://\"` resource string, or another `File`) with `/` and
+  constructs a `java.io.File`. Real `io/file` recursively constructs
+  `(File. parent child)` pairs; a flat `/`-join produces the identical
+  final path string for every measured call shape (no segment in scope
+  is empty or already absolute past the first)."
+  [& segments]
+  (mova.io/new-java-file (clojure.string/join "/" (map as-path-str segments))))
+
+;; kondo-wave: `as-file` -- `file`'s single-arg coercion, factored out
+;; because clojure-lsp's own `clojure-lsp.kondo/resolve-config` (and
+;; `kondo_smoke.clj`'s copy of the same pattern) calls `io/as-file`
+;; directly, not `io/file`. Real `as-file` is a `Coercions` protocol
+;; method (String/File/URL/URI); this covers the same String/File/
+;; `"file://"`-string subset `as-path-str` already does for `file`.
+(defn as-file
+  [x]
+  (if (instance? java.io.File x)
+    x
+    (mova.io/new-java-file (as-path-str x))))
+
+(defn input-stream
+  "clojure.java.io/input-stream: a real, streaming `HostKind::
+  InputStream` (review round 2) -- already-open streams pass through
+  unchanged (so `(io/input-stream System/in)` is exactly `System/in`
+  itself, matching real Clojure's own `IOFactory` identity case)."
+  [x]
+  (cond
+    (instance? java.io.InputStream x) x
+    (or (string? x) (instance? java.io.File x)) (mova.io/file-input-stream (as-path-str x))
+    :else (throw (ex-info (str "Cannot coerce to an InputStream: " x) {}))))
+
+(defn output-stream
+  "clojure.java.io/output-stream: a real, streaming `HostKind::
+  OutputStream` -- same identity-passthrough/coercion split as
+  `input-stream`."
+  [x]
+  (cond
+    (instance? java.io.OutputStream x) x
+    (or (string? x) (instance? java.io.File x)) (mova.io/file-output-stream (as-path-str x))
+    :else (throw (ex-info (str "Cannot coerce to an OutputStream: " x) {}))))
+
+(defn reader
+  "clojure.java.io/reader: mova makes no char-vs-byte distinction (its
+  strings are always UTF-8 already), so this is `input-stream` verbatim
+  -- the same real stream, not a separate wrapper."
+  [x]
+  (input-stream x))
+
+(defn writer
+  "clojure.java.io/writer: `output-stream` verbatim, same rationale as
+  `reader` above. Streams every `.write`/`.append` straight through to
+  the destination -- see `HostState::OutputStream`'s doc."
+  [x]
+  (output-stream x))
+
+(defn resource
+  "clojure.java.io/resource: a REAL search of Mova's module path, in
+  order (`mova.io/resolve-resource`) -- see this file's ns doc for the
+  `\"file://\" + path` return shape and why `slurp`/`io/file`/`str` all
+  accept it."
+  [path]
+  (when-let [abs (mova.io/resolve-resource path)]
+    (str "file://" abs)))
+
+(defn make-parents
+  [f]
+  (mova.io/make-parents (as-path-str f))
+  nil)
+
+(defn copy
+  "File-to-file only -- see this file's ns doc."
+  [from to]
+  (mova.io/copy-file (as-path-str from) (as-path-str to))
+  nil)
+
+;; `delete-file` already exists as a bare global (`src/builtins/sys.rs`,
+;; real Clojure has no `clojure.core/delete-file` -- this IS the correct
+;; namespace for it, `sys.rs`'s bare registration predates this shim and
+;; is kept for backward callers). Captured under a private name BEFORE
+;; `defn delete-file` below shadows the bare symbol in this namespace, so
+;; the wrapper can still reach the native.
+(def ^:private native-delete-file! delete-file)
+
+(defn delete-file
+  "clojure.java.io/delete-file: unlike the bare native, takes an optional
+  `silently` (real `io/delete-file`'s own second arg) and returns `true`
+  on success, matching real Clojure's contract (`false` on failure only
+  when `silently` is truthy; otherwise re-throws)."
+  ([f] (delete-file f false))
+  ([f silently]
+   (try
+     (native-delete-file! (as-path-str f))
+     true
+     (catch Exception e
+       (if silently
+         false
+         (throw e))))))

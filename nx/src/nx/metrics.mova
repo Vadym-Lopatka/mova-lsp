@@ -1,0 +1,214 @@
+;; Metrics, main side. Only main calls this, and only when traffic is quiet: it takes the edge taps
+;; from the native buffers in chunks, folds them (nx.core.latency), publishes the one picture and writes the session
+;; file. Loaded at the first drain (or from the metrics heap image), so start pays nothing for it.
+;; After the taps it takes the native numbers (worker jobs, project pass: mova.nx/met-take!) and reads the footprint.
+;;   m = {:st fold-state :obs error-snapshot :path session-file :dirty bool :written-ms n :fold-errors n :lost-exit n
+;;        :base startup-base :wall [ms ns] :jr journal-state}
+;; Journal (NX_OBS=1): :jr = {:path :bytes :made :off :lost-seen [in out]}; nil when off (nothing below runs).
+(ns nx.metrics
+  (:require [nx.caps :as caps] [nx.core.journal :as jr] [nx.core.latency :as lat] [nx.core.obs :as obs]))
+
+(def version "dev")                                        ; nx has no release version yet
+
+;; The one picture. Written by main only; anyone may read it.
+(def picture (atom nil))
+
+(def ^:private chunk 512)                                  ; taps folded between two looks at the traffic flag
+(def ^:private write-gap-ms 5000)                          ; the session file is written at most this often
+(def ^:private procs-gap-ms 10000)                         ; flow/ping (per-proc counts) at most this often, at a quiet drain
+(def ^:private procs-timeout-ms 20)                        ; main waits this long for the procs, never more
+(def ^:private max-fold-errors 100)                        ; after this many, taps are dropped unfolded (counted)
+
+(defn state-dir
+  "$XDG_STATE_HOME/nx, default ~/.local/state/nx."
+  []
+  (let [x (System/getenv "XDG_STATE_HOME")]
+    (str (if (seq x) x (str (System/getenv "HOME") "/.local/state")) "/nx")))
+
+(defn- env-int [k]
+  (when-let [v (System/getenv k)] (parse-long v)))
+
+(defn- jr-write
+  "m' with rows appended to the journal: one write, rotated first when it would pass the bound. A failed write turns
+  the journal off for good: rows are lost, nothing waits."
+  [m rows]
+  (let [j (:jr m)]
+    (if (or (nil? j) (:off j) (empty? rows))
+      m
+      (try
+        (let [txt (jr/text (:wall m) rows)
+              n (mova.io/utf8-byte-count txt)
+              j (if (jr/rotate? (:bytes j) n (:max j))
+                  (do (move-file (:path j) (str (:path j) ".1")) (assoc j :bytes 0))
+                  j)]
+          (when-not (:made j) (mova.io/make-parents (:path j)))
+          (spit (:path j) txt :append true)
+          (assoc m :jr (assoc j :made true :bytes (+ (:bytes j) n))))
+        (catch Exception _ (assoc m :jr (assoc j :off true)))))))
+
+(defn- jr-flush
+  "m' with the rows the fold collected written out."
+  [m]
+  (if (:jr m)
+    (let [[rows st] (lat/take-rows (:st m))]
+      (jr-write (assoc m :st st) rows))
+    m))
+
+(defn- with-base
+  "m with the startup base (mova.nx/met-base, read once) and the wall clock read next to it."
+  [m]
+  (if (:base m)
+    m
+    (let [b (mova.nx/met-base)]
+      (assoc m :base b :wall (when b [(System/currentTimeMillis) (:ns b)])))))
+
+(defn- jr-lost
+  "m' with a :lost row when the edges dropped taps since the last row."
+  [m]
+  (if (and (:jr m) (not (:off (:jr m))))
+    (let [[i o] (mova.nx/tap-lost)
+          [si so] (:lost-seen (:jr m))
+          row (jr/lost-row {:in (- i si) :out (- o so)} (System/currentTimeMillis))]
+      (-> (assoc-in m [:jr :lost-seen] [i o]) (jr-write (when row [row]))))
+    m))
+
+(defn start
+  "State of a new session. since-ms = server start (wall clock); it also names the session file (and the journal)."
+  [since-ms]
+  (let [pid (mova.os/pid)
+        commands (get-in caps/initialize-result [:capabilities :executeCommandProvider :commands])
+        base (str (state-dir) "/sessions/" since-ms "-" pid)
+        obs? (= "1" (System/getenv "NX_OBS"))
+        st (lat/initial since-ms
+                        {:nx/version version :root nil :jit (env-int "MOVA_JIT") :shards (env-int "MOVA_SHARDS") :pid pid}
+                        commands)
+        m {:st (cond-> st obs? lat/journal)
+           :obs (obs/initial-obs)
+           :path (str base ".edn")
+           :dirty false :written-ms 0 :fold-errors 0 :lost-exit 0
+           :procs-ms (+ since-ms (or (env-int "NX_PROCS_GAP_MS") procs-gap-ms))}]   ; NX_PROCS_GAP_MS: test knob
+    (if obs?
+      (jr-write (assoc m :jr {:path (str base ".log") :bytes 0 :lost-seen [0 0]
+                         :max (or (env-int "NX_OBS_MAX_BYTES") jr/max-bytes)})
+                [{:at since-ms :tel/kind :session :phase "start" :pid pid :v 1}])
+      m)))
+
+(defn- fold-taps
+  "m' with a chunk of taps folded. A tap whose fold throws is counted and skipped."
+  [m taps]
+  (if (>= (:fold-errors m) max-fold-errors)
+    (update m :fold-errors + (count taps))
+    (try
+      (assoc m :st (reduce lat/fold (:st m) taps) :dirty true)
+      (catch Exception _
+        (reduce (fn [m tap]
+                  (try (update m :st lat/fold tap)
+                       (catch Exception _ (update m :fold-errors inc))))
+                (assoc m :dirty true) taps)))))
+
+(defn- drain
+  "Folds the pending taps chunk by chunk. Stops when traffic is back (the flag is marked) or, with a deadline (ns
+  clock, exit only), when it has passed. What is left stays in the native buffer."
+  [m deadline]
+  (loop [m m]
+    (let [taps (mova.nx/tap-drain! chunk)]
+      (if (zero? (count taps))
+        m
+        (let [m (fold-taps m taps)
+              m (if (:jr m) (jr-flush (with-base m)) m)]
+          (if (if deadline (>= (System/nanoTime) deadline) (mova.nx/tap-flag! 2 2))
+            m
+            (recur m)))))))
+
+(defn- native
+  "m' with the native numbers folded: worker jobs and project passes (snapshot and reset in Rust), the base of the
+  startup stamps (read once) and one footprint reading."
+  [m]
+  (let [nat (mova.nx/met-take!)
+        m (if nat (assoc m :st (lat/note-native (:st m) nat) :dirty true) m)
+        m (if (and (:jr m) (or (seq (:jobs nat)) (seq (:passes nat))))
+            (jr-write (with-base m) (jr/native-rows nat (System/currentTimeMillis)))
+            m)
+        m (with-base m)]
+    (assoc m :st (lat/note-mem (:st m) (mova.os/footprint)))))
+
+(defn view
+  "The picture as written to the session file."
+  [m now ended?]
+  (let [pic (lat/view (:st m))
+        startup (lat/startup (:st m) (:base m))
+        [lost-in lost-out] (mova.nx/tap-lost)
+        by {:in lost-in :out lost-out :join (:lost-join pic) :exit (:lost-exit m)}]
+    (-> (cond-> (dissoc pic :lost-join) (seq startup) (assoc :startup startup) (seq (:procs m)) (assoc :procs (:procs m)))
+        (assoc :until-ms now
+               :ended ended?
+               :errors (obs/errors (:obs m))
+               :lost (reduce + (vals by))
+               :lost-by by
+               :fold-errors (:fold-errors m)))))
+
+(defn- save
+  "Writes the session file (temp + rename) and publishes the picture."
+  [m now ended?]
+  (let [pic (view m now ended?)
+        tmp (str (:path m) ".tmp")]
+    (reset! picture pic)
+    (mova.io/make-parents tmp)
+    (spit tmp (lat/edn-str pic))
+    (move-file tmp (:path m))
+    (assoc m :dirty false :written-ms now)))
+
+(defn wait-ms
+  "ms until the session file may be written again, or nil when there is nothing to write."
+  [m]
+  (when (:dirty m)
+    (max 1 (- (+ (:written-ms m) write-gap-ms) (System/currentTimeMillis)))))
+
+(defn idle
+  "The parked timer fired: write the session file when it is due."
+  [m]
+  (let [now (System/currentTimeMillis)]
+    (if (and (:dirty m) (>= (- now (:written-ms m)) write-gap-ms))
+      (save m now false)
+      m)))
+
+(defn quiet
+  "A tick with no tap: fold what is pending (taps, then the native numbers), then write the session file when due."
+  [m]
+  (idle (jr-lost (native (drain m nil)))))
+
+(defn procs
+  "m' with the per-proc message counts {pid {:count :status}} from flow/ping, when the last one is older than
+  procs-gap-ms (the first is due that long after start, so never in the startup window). Main waits at most
+  procs-timeout-ms (a proc busy in a long step answers late: it is left out). A failed ping is skipped."
+  [m fl]
+  (let [now (System/currentTimeMillis)]
+    (if (< now (:procs-ms m))
+      m
+      (let [r (try (flow/ping fl procs-timeout-ms) (catch Exception _ nil))
+            ps (into {} (keep (fn [[pid x]]
+                                (let [n (:clojure.core.async.flow/count x)]
+                                  (when (and (keyword? pid) (integer? n))
+                                    [pid {:count n :status (:clojure.core.async.flow/status x)}]))))
+                     r)]
+        (assoc m :procs-ms (+ (System/currentTimeMillis) (or (env-int "NX_PROCS_GAP_MS") procs-gap-ms))
+               :procs (if (seq ps) ps (:procs m)) :dirty true)))))
+
+(defn error
+  "Folds one Flow error map (and journals it when NX_OBS=1)."
+  [m e]
+  (let [msg (obs/flow->msg e)]
+    (-> (assoc m :obs (obs/note (:obs m) msg) :dirty true)
+        (jr-write [(jr/error-row msg (System/currentTimeMillis))]))))
+
+(defn finish
+  "Exit: fold what is pending until deadline (ns clock), count the rest as lost, write the final session file."
+  [m deadline]
+  (let [m (jr-lost (native (drain m deadline)))
+        m (assoc m :lost-exit (mova.nx/tap-pending))
+        now (System/currentTimeMillis)
+        m (if (:jr m)
+            (jr-write m (cond-> (into (lat/unanswered-rows (:st m)) [{:at now :tel/kind :session :phase "end"}])
+                          (pos? (:lost-exit m)) (conj {:at now :tel/kind :lost :count (:lost-exit m) :by {:exit (:lost-exit m)}})))
+            m)]
+    (save m now true)))

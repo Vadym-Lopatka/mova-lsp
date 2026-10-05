@@ -1,0 +1,17 @@
+{
+ "files": [
+  "src/app/core.clj",
+  "src/app/util.clj"
+ ],
+ "completion_prefixes": 20,
+ "late_ok": [
+  "jar",
+  "project-other"
+ ],
+ "warm_early": true,
+ "dep_scenarios": [
+  "open",
+  "stale",
+  "change"
+ ]
+}
